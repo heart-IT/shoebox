@@ -1,0 +1,27 @@
+# deps
+node_modules/
+
+# macOS
+.DS_Store
+
+# iOS
+app/ios/Pods/
+app/ios/build/
+app/ios/.xcode.env.local
+app/vendor/bundle/
+
+# Android
+app/android/build/
+app/android/app/build/
+app/android/.gradle/
+app/android/local.properties
+*.keystore
+!debug.keystore
+
+# Metro / RN
+app/.metro-health-check*
+*.jsbundle
+
+# testing / temp
+coverage/
+*.log

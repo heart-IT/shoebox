@@ -1,0 +1,13 @@
+{
+  "name": "shoebox-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Desktop peers for Shoebox — peek.mjs is the Part 1 teaser",
+  "dependencies": {
+    "corestore": "^7.11.0",
+    "hyperblobs": "^2.12.1",
+    "hypercore-id-encoding": "^1.3.0",
+    "hyperswarm": "^4.17.0"
+  }
+}
