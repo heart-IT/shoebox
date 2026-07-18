@@ -54,3 +54,33 @@ time, 2026-07-10.
   → real DHT → `peek.mjs` replicated the photo byte-identical.
 - 2026-07-10 — `nitrogen` 0.36.1 codegen green (21 files) alongside
   react-native-bare-kit in one New-Architecture app.
+
+## Drift findings — first full Android boot (2026-07-18)
+
+The scaffold had only been proven through `worker/` Node tests; the first
+on-device Android run surfaced five integration traps, all fixed in-tree:
+
+- **react-native-bare-kit 0.15 requires `minSdkVersion 29`** (manifest merger
+  fails against the RN template default of 24).
+- **nitrogen's generated gradle/srcDir assume the nitro LIBRARY layout**
+  (`android/` at package root). In an app, `android/app/build.gradle` must
+  apply from `../../nitrogen/...` and add the kotlin srcDir itself — the
+  generated `${projectDir}/../nitrogen` path silently resolves to a
+  nonexistent `android/nitrogen/`.
+- **Overriding `externalNativeBuild` replaces RN's appmodules build.**
+  Bridgeless boot hard-requires `libappmodules.so`; the app CMakeLists must
+  be `project(appmodules)` + `include(ReactNative-application.cmake)`, with
+  the nitro `Shoebox` target added alongside. Nitro headers also require
+  `CMAKE_CXX_STANDARD 20`.
+- **`ReactNative-application.cmake` globs `*.cpp` next to the CMakeLists and,
+  if any exist, DROPS its default-app-setup sources** — including the OnLoad
+  that registers the TurboModule delegate. Symptom: every TurboModule missing
+  at boot ("'PlatformConstants' could not be found", "Global was not
+  installed"). cpp-adapter.cpp therefore lives in `nitro/`, out of glob range.
+- **bare-kit's prebuilt lists `libnativehelper.so` (ART apex) as NEEDED.**
+  The system linker resolves it (public library), but SoLoader's manual
+  dependency walk only searches app + /system + /vendor and fails to load
+  libappmodules. Fix in MainApplication: init SoLoader with RN's merged
+  mapping, then `prependSoSource(DirectorySoSource("/apex/com.android.art/
+  lib64", ON_LD_LIBRARY_PATH))` before `loadReactNative`. Any RN new-arch
+  app embedding bare-kit 0.15 needs this (peerBarter included).

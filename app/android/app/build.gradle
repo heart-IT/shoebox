@@ -126,4 +126,7 @@ dependencies {
 }
 
 // Nitrogen-generated sources (Kotlin specs + OnLoad)
-apply from: "../nitrogen/generated/android/Shoebox+autolinking.gradle"
+apply from: "../../nitrogen/generated/android/Shoebox+autolinking.gradle"
+// nitrogen's generated srcDir assumes the nitro library layout (android/ at the
+// package root); the app module sits one level deeper, so add the real path.
+android.sourceSets.main.java.srcDirs += ["${projectDir}/../../nitrogen/generated/android/kotlin"]
