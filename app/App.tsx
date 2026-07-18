@@ -131,6 +131,18 @@ export default function App() {
     })
   }
 
+  // Movement 4 — the reveal. Same ArrayBuffer result, but readBytes is a typed
+  // Kotlin method: no hand-written C++, no JNI, no manual munmap. Nitro
+  // generates the binding and its ArrayBuffer type states the ownership rule
+  // that Movement 3 wrote by hand. The measurement lands next to the C++ one.
+  const importRollNitro = () =>
+    measuredImport('nitro bytes (Kotlin)', async (roll, a, meter) => {
+      const buf: ArrayBuffer = roll.readBytes(a.path)
+      const view = new Uint8Array(buf)
+      meter.recordInFlight(view.length)
+      await clientRef.current!.importRaw(a.name, view)
+    })
+
   return (
     <SafeAreaView style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -140,7 +152,8 @@ export default function App() {
         <Button title="Import one photo" onPress={importOne} />
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
-        <Button title={`Import ${BATCH} (mmap bytes)`} onPress={importRollZeroCopy} />
+        <Button title={`Import ${BATCH} (mmap C++)`} onPress={importRollZeroCopy} />
+        <Button title={`Import ${BATCH} (nitro Kotlin)`} onPress={importRollNitro} />
 
         {reading && (
           <View style={styles.meterBox}>

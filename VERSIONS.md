@@ -179,3 +179,21 @@ explicit lifetime by hand).
   "peak in-flight" reads the same JS-side view length for both; the real native
   RSS difference (mapped pages vs a heap-allocated copy) is below what the
   on-screen meter captures. The stall win (the base64 story) is what both share.
+
+## Ch02 Movement 4 — the Nitro reveal (measured on device)
+
+`ShoeboxRoll.readBytes(path): ArrayBuffer` — a typed Kotlin method returning a
+Nitro ArrayBuffer. No hand-written C++, no JNI, no manual `munmap`: Nitrogen
+generates the binding and Nitro's ArrayBuffer type states the ownership rule
+that Movement 3's C++ wrote by hand.
+
+- **The reveal, all four paths, same 30 photos / 16.3 MB:**
+  | path | throughput | JS stall |
+  |---|---|---|
+  | naive base64 (M2) | 1.84 MB/s | 796 ms |
+  | mmap C++ zero-copy (M3, hand-rolled) | 2.45 MB/s | 35 ms |
+  | **nitro Kotlin readBytes (M4, typed)** | **2.52 MB/s** | **51 ms** |
+- The typed Kotlin method matches the 40-line hand-rolled C++ within variance —
+  same ArrayBuffer, same collapse of the stall, none of the C++ to maintain.
+  That IS the movement's thesis: what Nitrogen generates is the contract you
+  wrote by hand. Nitro is mainline from here.
