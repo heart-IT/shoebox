@@ -197,3 +197,57 @@ that Movement 3's C++ wrote by hand.
   same ArrayBuffer, same collapse of the stall, none of the C++ to maintain.
   That IS the movement's thesis: what Nitrogen generates is the contract you
   wrote by hand. Nitro is mainline from here.
+
+## Ch03 Movement 1 — Hyperbee index by capture-time + Hyperschema records
+
+- `hyperbee@2.27.3`, `hyperschema@1.21.0`, `compact-encoding` added to the worker
+  (and hyperbee to desktop for peek).
+- The index is a **Hyperbee** over the core `photo-bee`, keyed by an 8-byte
+  BIG-ENDIAN capture-time + name (so bytewise order = chronological, and a time
+  window is a range query). Values are the generated `@shoebox/photo`
+  Hyperschema struct — compact-encoding, not JSON. `build-schema.mjs` regenerates
+  `spec/`.
+- **Inv-4** verified in the smoke test: a record written WITHOUT the optional
+  `orientation`/`width`/`height`/`thumb` fields still decodes (making them
+  required would break every older record — the append-only contract).
+- **Three integration traps (all real, on-device):**
+  1. **Hyperschema `toDisk` emitted ESM** despite the docs' CJS default →
+     worklet SIGABRT `Cannot use import statement outside a module`. Fix:
+     `toDisk(schema, { esm: false })` (the worker/peek load it with `require`).
+  2. **A count scan in `ready()` hung the worker boot.** `for await
+     (…bee.createReadStream())` at startup never resolved on device. Fix: compute
+     the count lazily (`ensureCount()`), not on the boot path.
+  3. **Incompatible format on an existing core.** Ch2 left a `photo-index`
+     Hypercore append-log on the device; opening a Hyperbee over it decoded log
+     blocks as B-tree nodes → `DECODING_ERROR: Groups are not supported` (from
+     protocol-buffers-encodings). Fix: new core name `photo-bee` — a format
+     change gets a new namespace, the old log is abandoned, not migrated in place.
+- Verified on device: vault boots over the fresh bee, 30 photos import keyed by
+  capture-time, peek.mjs replicates + decodes via the SHARED schema and finds the
+  newest by time. RPC gains a `LIST` command (time-ordered window) for the grid.
+
+## Ch03 Movements 2 & 3 — worker thumbnails + the windowed grid
+
+- **M2 thumbnails (worker-only):** `bare-media@2.10.0` (added to the worker). It
+  wraps Bare-native image codecs (bare-jpeg/png/webp/heif + bare-ffmpeg for the
+  rest, bare-exif for orientation). `worker/thumbnail.js` decodes → resizes to
+  ≤256px → encodes webp → `data:` URL, stored in the record's `thumb` field. It
+  runs ONLY in Bare (lazy dynamic `import()`, so it stays out of the Node smoke
+  test's path). Import fills `thumb`/`width`/`height`/`orientation`; unsupported
+  formats import without a thumb (graceful).
+  - **Viability notes:** bare-media's codecs load via literal-specifier dynamic
+    imports (`import('bare-jpeg')`), which bare-pack bundles statically. All
+    runtime native deps ship android-arm64 prebuilds; `bare-lief` (flagged by a
+    prebuild audit) is a HOST-side tool pulled by bare-link, never linked into
+    the APK — the build confirmed it. Cost: bare-ffmpeg adds ~29 MB to the APK.
+- **M3 grid:** `@shopify/flash-list@2.3.2` — a 3-column windowed grid
+  (`app/src/Grid.tsx`) driven by the RPC `LIST` (time-ordered window over the
+  Hyperbee). Cells paint the `data:` thumbnails from the index alone; the grid
+  never touches an original. Tapping a cell is the ONLY time a full-res original
+  is fetched — lazily, via the localhost blob-server, in a modal.
+- **Wrong-first (described, not shipped — it OOMs):** render full-res originals
+  into every cell → a large library OOMs a mid-range phone. The fix is the whole
+  movement: eager ≤256px thumbnails, lazy originals.
+- Verified on device: 30 real camera-roll photos import with worker-generated
+  thumbnails; the grid renders them newest-first (windowed/recycled); tapping a
+  cell opens the full-resolution original. peek.mjs regression still passes.

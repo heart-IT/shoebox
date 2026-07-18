@@ -41,6 +41,7 @@ changes; the generated output in `nitrogen/generated/` is committed.
 |-----|-------|
 | `ch01-one-photo` | One photo stored in Hyperblobs, rendered through a localhost blob-server URL, replicated to a laptop via the sealed teaser |
 | `ch02-importing-the-roll` | The whole camera roll imported four ways, measured on-screen: naive base64 (796 ms JS-thread stall) → mmap'd bytes over bare-rpc → a hand-rolled C++ zero-copy `ArrayBuffer` → the typed Nitro reveal (35–51 ms stall). Enumeration via a Nitro `ShoeboxRoll` module |
+| `ch03-the-library` | A time-ordered photo grid over the vault: the index is a **Hyperbee** keyed by capture-time (range queries), records are **Hyperschema**/compact-encoding (append-only, Inv-4). The worker generates ≤256px **bare-media** thumbnails shipped as `data:` URLs; a windowed **FlashList** grid paints from the index, and originals load lazily on tap via the blob-server |
 
 Each measured import path is a button in the app; the on-screen meter reports
 throughput, worst JS-thread stall, and peak in-flight bytes. See `VERSIONS.md`

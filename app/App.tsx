@@ -19,6 +19,7 @@ import { requestRollPermission, rollModule, type RollAsset } from './src/roll'
 import { bytesModule } from './src/bytes'
 import { VaultClient } from './src/vault-client'
 import { Meter, type Reading } from './src/meter'
+import { Grid } from './src/Grid'
 
 // How many photos the naive import stresses. Fixed so Movements 2/3/4 compare
 // on the same workload.
@@ -32,6 +33,7 @@ export default function App() {
   const [rollPreview, setRollPreview] = useState<RollAsset[]>([])
   const [reading, setReading] = useState<Reading | null>(null)
   const [readingLabel, setReadingLabel] = useState('')
+  const [showGrid, setShowGrid] = useState(false)
   const clientRef = useRef<VaultClient | null>(null)
 
   useEffect(() => {
@@ -114,7 +116,7 @@ export default function App() {
     measuredImport('naive base64', async (roll, a, meter) => {
       const base64 = roll.readBase64(a.path) // whole file → JS string
       meter.recordInFlight(base64.length)
-      await clientRef.current!.importPhoto(a.name, base64)
+      await clientRef.current!.importPhoto(a.name, base64, a.takenAt)
     })
 
   // Movement 3 — hand-rolled C++ mmap: mapFile returns an ArrayBuffer that
@@ -127,7 +129,7 @@ export default function App() {
       const buf: ArrayBuffer = bytes.mapFile(a.path)
       const view = new Uint8Array(buf)
       meter.recordInFlight(view.length)
-      await clientRef.current!.importRaw(a.name, view)
+      await clientRef.current!.importRaw({ name: a.name, takenAt: a.takenAt }, view)
     })
   }
 
@@ -140,8 +142,17 @@ export default function App() {
       const buf: ArrayBuffer = roll.readBytes(a.path)
       const view = new Uint8Array(buf)
       meter.recordInFlight(view.length)
-      await clientRef.current!.importRaw(a.name, view)
+      await clientRef.current!.importRaw({ name: a.name, takenAt: a.takenAt }, view)
     })
+
+  if (showGrid && clientRef.current) {
+    return (
+      <SafeAreaView style={styles.root}>
+        <Button title="← back" onPress={() => setShowGrid(false)} />
+        <Grid client={clientRef.current} />
+      </SafeAreaView>
+    )
+  }
 
   return (
     <SafeAreaView style={styles.root}>
@@ -149,6 +160,7 @@ export default function App() {
         <Text style={styles.title}>Shoebox</Text>
         <Text style={styles.status}>{status}</Text>
 
+        <Button title="Show grid" onPress={() => setShowGrid(true)} />
         <Button title="Import one photo" onPress={importOne} />
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
