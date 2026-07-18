@@ -40,3 +40,8 @@ changes; the generated output in `nitrogen/generated/` is committed.
 | Tag | Ships |
 |-----|-------|
 | `ch01-one-photo` | One photo stored in Hyperblobs, rendered through a localhost blob-server URL, replicated to a laptop via the sealed teaser |
+| `ch02-importing-the-roll` | The whole camera roll imported four ways, measured on-screen: naive base64 (796 ms JS-thread stall) → mmap'd bytes over bare-rpc → a hand-rolled C++ zero-copy `ArrayBuffer` → the typed Nitro reveal (35–51 ms stall). Enumeration via a Nitro `ShoeboxRoll` module |
+
+Each measured import path is a button in the app; the on-screen meter reports
+throughput, worst JS-thread stall, and peak in-flight bytes. See `VERSIONS.md`
+for the per-movement drift findings and numbers.
