@@ -123,3 +123,31 @@ didn't crash." peerBarter/any Nitro app needs both wirings.
 - **Baseline (30 photos, 16.3 MB, this device):** 1.84 MB/s, 8.9 s wall,
   **796 ms worst JS-thread stall** (~48 dropped frames), **7.73 MB peak
   in-flight base64**. These are Movement 3's target to beat.
+
+## Ch02 Movement 3 — mmap'd raw bytes (measured on device)
+
+`ShoeboxRoll.readBytes(path): ArrayBuffer` — `FileChannel.map()` (mmap) then one
+owning `ArrayBuffer.copy`. No base64, no JSON: the ArrayBuffer rides bare-rpc as
+raw bytes via a new IMPORT_RAW command framed `[u16 LE nameLen][name][bytes]`.
+
+- **Bug found:** the worker JSON-parsed `req.data` for ALL commands at the top of
+  the handler; IMPORT_RAW's payload is binary, so it threw
+  "Unexpected token 'F'" (the u16 length byte). Fix: parse JSON only inside the
+  JSON commands.
+- **Result vs Movement 2 (same 30 photos / 16.3 MB):**
+  | metric | naive base64 | mmap bytes | change |
+  |---|---|---|---|
+  | throughput | 1.84 MB/s | 2.95 MB/s | 1.6× |
+  | wall | 8.9 s | 5.5 s | 1.6× |
+  | **JS-thread stall** | **796 ms** | **42 ms** | **19× less** |
+  | peak in-flight | 7.73 MB | 5.80 MB | base64's 1.33× gone |
+- **The honest finding (better than the spec's "order of magnitude faster"
+  guess):** base64's dominant cost was the JS-THREAD STALL (jank), not raw
+  throughput. Removing the encode + `JSON.stringify` of a megabyte string drops
+  the worst stall from 796 ms (≈48 dropped frames, a visible freeze) to 42 ms
+  (≈idle). Throughput rises only 1.6× because past base64 the cost is the IPC
+  copy + Hyperblobs write, not encoding. "JS thread idle throughout" — achieved.
+- **Zero-copy caveat:** Kotlin copies once (mmap → owning ArrayBuffer) because
+  Nitro's zero-copy wrap ctor is `internal`. True no-copy — `ArrayBuffer::wrap`
+  over the mmap with an explicit `munmap` release (Inv-3) — is C++-only and is
+  the hand-rolled read-along ideal, deferred pending the M3/M4 shape decision.

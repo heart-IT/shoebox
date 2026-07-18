@@ -30,6 +30,7 @@ export default function App() {
   const [rollCount, setRollCount] = useState<number | null>(null)
   const [rollPreview, setRollPreview] = useState<RollAsset[]>([])
   const [reading, setReading] = useState<Reading | null>(null)
+  const [readingLabel, setReadingLabel] = useState('')
   const clientRef = useRef<VaultClient | null>(null)
 
   useEffect(() => {
@@ -71,10 +72,12 @@ export default function App() {
     }
   }
 
-  // Movement 2 — the measured wrong way. Read each asset into a base64 string
-  // and ship it over the RPC, one round-trip per photo. The meter records what
-  // that costs; the numbers are the argument for Movement 3.
-  const importRollNaive = async () => {
+  // Run a measured import over the same BATCH with a supplied per-asset step.
+  // Movements 2 and 3 differ only in that step, so they compare on one workload.
+  const measuredImport = async (
+    label: string,
+    step: (roll: any, a: RollAsset, meter: Meter) => Promise<void>,
+  ) => {
     const granted = await requestRollPermission()
     if (!granted) return setStatus('photo permission denied')
     const roll = rollModule()
@@ -84,32 +87,44 @@ export default function App() {
     const n = Math.min(BATCH, roll.count())
     const assets = roll.assets(0, n)
     setReading(null)
-    setStatus(`importing ${n} (naive base64)…`)
+    setStatus(`importing ${n} (${label})…`)
 
     const meter = new Meter()
     meter.start(Date.now())
-    let last: RollAsset | null = null
     try {
       for (const a of assets) {
         if (!a.path) continue // skip assets with no readable path (iOS)
-        const base64 = roll.readBase64(a.path) // whole file → JS string
-        meter.recordInFlight(base64.length)
-        await client.importPhoto(a.name, base64)
+        await step(roll, a, meter)
         meter.recordPhoto(a.byteLength)
-        last = a
       }
       const r = meter.stop(Date.now())
       setReading(r)
-      setStatus(`imported ${r.photos} photos, naive`)
-      if (last) {
-        const s = await client.stat()
-        setStatus(`imported ${r.photos} · vault now ${s.photos}`)
-      }
+      setReadingLabel(label)
+      const s = await client.stat()
+      setStatus(`imported ${r.photos} (${label}) · vault now ${s.photos}`)
     } catch (e) {
       meter.stop(Date.now())
-      setStatus(`roll import failed: ${String(e)}`)
+      setStatus(`import failed: ${String(e)}`)
     }
   }
+
+  // Movement 2 — the measured wrong way: base64 string per photo over the RPC.
+  const importRollNaive = () =>
+    measuredImport('naive base64', async (roll, a, meter) => {
+      const base64 = roll.readBase64(a.path) // whole file → JS string
+      meter.recordInFlight(base64.length)
+      await clientRef.current!.importPhoto(a.name, base64)
+    })
+
+  // Movement 3 — mmap'd raw bytes: no base64, no JSON. The ArrayBuffer rides the
+  // RPC as-is. Same workload as naive; the meter tells the difference.
+  const importRollZeroCopy = () =>
+    measuredImport('mmap bytes', async (roll, a, meter) => {
+      const buf: ArrayBuffer = roll.readBytes(a.path)
+      const bytes = new Uint8Array(buf)
+      meter.recordInFlight(bytes.length)
+      await clientRef.current!.importRaw(a.name, bytes)
+    })
 
   return (
     <SafeAreaView style={styles.root}>
@@ -120,17 +135,18 @@ export default function App() {
         <Button title="Import one photo" onPress={importOne} />
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
+        <Button title={`Import ${BATCH} (mmap bytes)`} onPress={importRollZeroCopy} />
 
         {reading && (
           <View style={styles.meterBox}>
-            <Text style={styles.meterTitle}>naive import</Text>
+            <Text style={styles.meterTitle}>{readingLabel}</Text>
             <Text style={styles.meterLine}>
               {reading.throughputMBs.toFixed(2)} MB/s ·{' '}
               {(reading.bytes / 1e6).toFixed(1)} MB in {reading.seconds.toFixed(1)}s
             </Text>
             <Text style={styles.meterLine}>JS-thread stall: {reading.jsStallMs} ms worst</Text>
             <Text style={styles.meterLine}>
-              peak in-flight: {(reading.peakInFlightBytes / 1e6).toFixed(2)} MB (base64)
+              peak in-flight: {(reading.peakInFlightBytes / 1e6).toFixed(2)} MB
             </Text>
           </View>
         )}

@@ -14,6 +14,8 @@ namespace margelo::nitro::shoebox { struct RollAsset; }
 #include <vector>
 #include "JRollAsset.hpp"
 #include <string>
+#include <NitroModules/ArrayBuffer.hpp>
+#include <NitroModules/JArrayBuffer.hpp>
 
 namespace margelo::nitro::shoebox {
 
@@ -71,6 +73,11 @@ namespace margelo::nitro::shoebox {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JString>(jni::alias_ref<jni::JString> /* path */)>("readBase64");
     auto __result = method(_javaPart, jni::make_jstring(path));
     return __result->toStdString();
+  }
+  std::shared_ptr<ArrayBuffer> JHybridShoeboxRollSpec::readBytes(const std::string& path) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JArrayBuffer::javaobject>(jni::alias_ref<jni::JString> /* path */)>("readBytes");
+    auto __result = method(_javaPart, jni::make_jstring(path));
+    return __result->cthis()->getArrayBuffer();
   }
 
 } // namespace margelo::nitro::shoebox

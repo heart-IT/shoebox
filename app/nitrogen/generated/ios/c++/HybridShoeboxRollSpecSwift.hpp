@@ -14,10 +14,14 @@ namespace Shoebox { class HybridShoeboxRollSpec_cxx; }
 
 // Forward declaration of `RollAsset` to properly resolve imports.
 namespace margelo::nitro::shoebox { struct RollAsset; }
+// Forward declaration of `ArrayBufferHolder` to properly resolve imports.
+namespace NitroModules { class ArrayBufferHolder; }
 
 #include "RollAsset.hpp"
 #include <vector>
 #include <string>
+#include <NitroModules/ArrayBuffer.hpp>
+#include <NitroModules/ArrayBufferHolder.hpp>
 
 #include "Shoebox-Swift-Cxx-Umbrella.hpp"
 
@@ -87,6 +91,14 @@ namespace margelo::nitro::shoebox {
     }
     inline std::string readBase64(const std::string& path) override {
       auto __result = _swiftPart.readBase64(path);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<ArrayBuffer> readBytes(const std::string& path) override {
+      auto __result = _swiftPart.readBytes(path);
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }

@@ -10,6 +10,7 @@ package com.margelo.nitro.shoebox
 import androidx.annotation.Keep
 import com.facebook.jni.HybridData
 import com.facebook.proguard.annotations.DoNotStrip
+import com.margelo.nitro.core.ArrayBuffer
 import com.margelo.nitro.core.HybridObject
 
 /**
@@ -39,6 +40,10 @@ abstract class HybridShoeboxRollSpec: HybridObject() {
   @DoNotStrip
   @Keep
   abstract fun readBase64(path: String): String
+  
+  @DoNotStrip
+  @Keep
+  abstract fun readBytes(path: String): ArrayBuffer
 
   // Default implementation of `HybridObject.toString()`
   override fun toString(): String {

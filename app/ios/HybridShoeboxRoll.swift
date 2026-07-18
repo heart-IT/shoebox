@@ -22,6 +22,14 @@ class HybridShoeboxRoll: HybridShoeboxRollSpec {
     return (try? Data(contentsOf: URL(fileURLWithPath: path)))?.base64EncodedString() ?? ""
   }
 
+  func readBytes(path: String) throws -> ArrayBufferHolder {
+    // iOS: unverified alongside readBase64 (no stable PHAsset path).
+    let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
+    let buffer = ArrayBufferHolder.allocate(size: data.count)
+    data.copyBytes(to: buffer.data.assumingMemoryBound(to: UInt8.self), count: data.count)
+    return buffer
+  }
+
   func assets(offset: Double, limit: Double) throws -> [RollAsset] {
     let all = fetchAll()
     var out: [RollAsset] = []

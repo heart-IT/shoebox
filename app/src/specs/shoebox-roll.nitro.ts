@@ -1,4 +1,5 @@
 import type { HybridObject } from 'react-native-nitro-modules'
+// Nitro maps the global `ArrayBuffer` type to a native ArrayBuffer.
 
 /**
  * One camera-roll asset, as the platform photo library describes it. No bytes
@@ -37,4 +38,11 @@ export interface ShoeboxRoll
    * ~1.33× its size, then that string crosses the IPC. Movement 3 replaces it.
    */
   readBase64(path: string): string
+  /**
+   * Movement 3: the asset as raw bytes in an ArrayBuffer — no base64, no JSON.
+   * The file is mmap'd and handed over as binary; bare-rpc sends the buffer
+   * as-is. Removes the base64 inflation, the encode CPU, and the megabyte-long
+   * string on the JS heap that stalled Movement 2.
+   */
+  readBytes(path: string): ArrayBuffer
 }

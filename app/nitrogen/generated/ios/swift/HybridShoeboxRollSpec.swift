@@ -16,6 +16,7 @@ public protocol HybridShoeboxRollSpec_protocol: HybridObject {
   func count() throws -> Double
   func assets(offset: Double, limit: Double) throws -> [RollAsset]
   func readBase64(path: String) throws -> String
+  func readBytes(path: String) throws -> ArrayBuffer
 }
 
 public extension HybridShoeboxRollSpec_protocol {

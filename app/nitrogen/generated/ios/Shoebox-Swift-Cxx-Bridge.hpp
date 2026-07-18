@@ -25,6 +25,7 @@ namespace Shoebox { class HybridShoeboxRollSpec_cxx; }
 #include "HybridShoeboxPathsSpec.hpp"
 #include "HybridShoeboxRollSpec.hpp"
 #include "RollAsset.hpp"
+#include <NitroModules/ArrayBuffer.hpp>
 #include <NitroModules/Result.hpp>
 #include <exception>
 #include <memory>
@@ -97,6 +98,15 @@ namespace margelo::nitro::shoebox::bridge::swift {
   }
   inline Result_std__vector_RollAsset__ create_Result_std__vector_RollAsset__(const std::exception_ptr& error) noexcept {
     return Result<std::vector<RollAsset>>::withError(error);
+  }
+  
+  // pragma MARK: Result<std::shared_ptr<ArrayBuffer>>
+  using Result_std__shared_ptr_ArrayBuffer__ = Result<std::shared_ptr<ArrayBuffer>>;
+  inline Result_std__shared_ptr_ArrayBuffer__ create_Result_std__shared_ptr_ArrayBuffer__(const std::shared_ptr<ArrayBuffer>& value) noexcept {
+    return Result<std::shared_ptr<ArrayBuffer>>::withValue(value);
+  }
+  inline Result_std__shared_ptr_ArrayBuffer__ create_Result_std__shared_ptr_ArrayBuffer__(const std::exception_ptr& error) noexcept {
+    return Result<std::shared_ptr<ArrayBuffer>>::withError(error);
   }
 
 } // namespace margelo::nitro::shoebox::bridge::swift

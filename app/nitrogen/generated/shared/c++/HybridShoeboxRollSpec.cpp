@@ -17,6 +17,7 @@ namespace margelo::nitro::shoebox {
       prototype.registerHybridMethod("count", &HybridShoeboxRollSpec::count);
       prototype.registerHybridMethod("assets", &HybridShoeboxRollSpec::assets);
       prototype.registerHybridMethod("readBase64", &HybridShoeboxRollSpec::readBase64);
+      prototype.registerHybridMethod("readBytes", &HybridShoeboxRollSpec::readBytes);
     });
   }
 

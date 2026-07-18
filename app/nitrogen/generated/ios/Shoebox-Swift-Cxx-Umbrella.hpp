@@ -19,6 +19,7 @@ namespace margelo::nitro::shoebox { struct RollAsset; }
 #include "HybridShoeboxPathsSpec.hpp"
 #include "HybridShoeboxRollSpec.hpp"
 #include "RollAsset.hpp"
+#include <NitroModules/ArrayBuffer.hpp>
 #include <NitroModules/Result.hpp>
 #include <exception>
 #include <memory>

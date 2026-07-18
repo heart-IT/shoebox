@@ -12,7 +12,7 @@ const { Vault } = require('./vault')
 
 // bare-rpc encodes the command as a uint on the wire — commands are integers,
 // not strings. This map is the wire contract; the app mirrors it exactly.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, ERROR: 9 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, ERROR: 9 }
 
 let vault = null
 // Requests can arrive before the vault finishes opening; gate every command on
@@ -23,14 +23,27 @@ const ready = new Promise((resolve) => { resolveReady = resolve })
 const rpc = new RPC(BareKit.IPC, async (req) => {
   await ready
   try {
-    const data = req.data && req.data.byteLength ? JSON.parse(b4a.toString(req.data)) : {}
     switch (req.command) {
       case CMD.STAT:
         req.reply(json({ photos: await vault.count() }))
         break
       case CMD.IMPORT: {
+        // JSON payload — Movement 2's naive base64 path.
+        const data = JSON.parse(b4a.toString(req.data))
         const result = await vault.importPhoto(b4a.from(data.dataBase64, 'base64'), data.name)
         await vault.share() // announce so peek.mjs can find us
+        req.reply(json(result))
+        break
+      }
+      case CMD.IMPORT_RAW: {
+        // Movement 3 wire: [u16 LE nameLen][name utf8][photo bytes]. No base64,
+        // no JSON around the payload — the bytes are the payload.
+        const buf = req.data
+        const nameLen = buf[0] | (buf[1] << 8)
+        const name = b4a.toString(buf.subarray(2, 2 + nameLen))
+        const bytes = buf.subarray(2 + nameLen)
+        const result = await vault.importPhoto(bytes, name)
+        await vault.share()
         req.reply(json(result))
         break
       }

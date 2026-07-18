@@ -3,7 +3,10 @@ package com.margelo.nitro.shoebox
 import android.provider.MediaStore
 import android.util.Base64
 import com.margelo.nitro.NitroModules
+import com.margelo.nitro.core.ArrayBuffer
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.channels.FileChannel
 
 class HybridShoeboxRoll : HybridShoeboxRollSpec() {
   private val resolver
@@ -66,5 +69,20 @@ class HybridShoeboxRoll : HybridShoeboxRollSpec() {
   override fun readBase64(path: String): String {
     val bytes = File(path).readBytes()
     return Base64.encodeToString(bytes, Base64.NO_WRAP)
+  }
+
+  // Movement 3: mmap the file and copy it once into an owning direct ArrayBuffer.
+  // No base64 (no 1.33x inflation, no encode pass) and no JS string — the bytes
+  // cross to JS as binary and ride bare-rpc raw. The mmap makes the read a page
+  // fault, not a heap read. (True zero-copy — wrapping the MappedByteBuffer with
+  // no copy — needs C++ ArrayBuffer::wrap + an explicit munmap; that's the
+  // hand-rolled read-along ideal. Kotlin's wrapping ctor is internal, so the
+  // owning copy is the honest Kotlin-side version.)
+  override fun readBytes(path: String): ArrayBuffer {
+    RandomAccessFile(path, "r").use { raf ->
+      val channel = raf.channel
+      val mapped = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size())
+      return ArrayBuffer.copy(mapped)
+    }
   }
 }
