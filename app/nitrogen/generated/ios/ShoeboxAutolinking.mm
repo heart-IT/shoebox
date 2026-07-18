@@ -11,6 +11,7 @@
 #import <type_traits>
 
 #include "HybridShoeboxPathsSpecSwift.hpp"
+#include "HybridShoeboxRollSpecSwift.hpp"
 
 @interface ShoeboxAutolinking : NSObject
 @end
@@ -25,6 +26,13 @@
     "ShoeboxPaths",
     []() -> std::shared_ptr<HybridObject> {
       std::shared_ptr<HybridShoeboxPathsSpec> hybridObject = Shoebox::ShoeboxAutolinking::createShoeboxPaths();
+      return hybridObject;
+    }
+  );
+  HybridObjectRegistry::registerHybridObjectConstructor(
+    "ShoeboxRoll",
+    []() -> std::shared_ptr<HybridObject> {
+      std::shared_ptr<HybridShoeboxRollSpec> hybridObject = Shoebox::ShoeboxAutolinking::createShoeboxRoll();
       return hybridObject;
     }
   );

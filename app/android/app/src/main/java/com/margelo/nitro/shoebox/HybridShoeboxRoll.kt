@@ -1,0 +1,60 @@
+package com.margelo.nitro.shoebox
+
+import android.provider.MediaStore
+import com.margelo.nitro.NitroModules
+
+class HybridShoeboxRoll : HybridShoeboxRollSpec() {
+  private val resolver
+    get() = (NitroModules.applicationContext
+      ?: throw Error("NitroModules.applicationContext is not available")).contentResolver
+
+  override fun count(): Double {
+    resolver.query(
+      MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+      arrayOf(MediaStore.Images.Media._ID),
+      null, null, null
+    ).use { c -> return (c?.count ?: 0).toDouble() }
+  }
+
+  override fun assets(offset: Double, limit: Double): Array<RollAsset> {
+    val projection = arrayOf(
+      MediaStore.Images.Media._ID,
+      MediaStore.Images.Media.DISPLAY_NAME,
+      MediaStore.Images.Media.SIZE,
+      MediaStore.Images.Media.DATE_TAKEN,
+      MediaStore.Images.Media.DATE_ADDED,
+      // Deprecated but still populated for images; the worker (same process,
+      // same permission) streams bytes from this path in later movements.
+      MediaStore.Images.Media.DATA
+    )
+    val out = ArrayList<RollAsset>(limit.toInt())
+    resolver.query(
+      MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+      projection,
+      null, null,
+      "${MediaStore.Images.Media.DATE_TAKEN} DESC"
+    ).use { c ->
+      if (c == null || !c.moveToPosition(offset.toInt())) return out.toTypedArray()
+      val idCol = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+      val nameCol = c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+      val sizeCol = c.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
+      val takenCol = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
+      val addedCol = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+      val dataCol = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
+      do {
+        val taken = c.getLong(takenCol)
+        out.add(
+          RollAsset(
+            id = c.getLong(idCol).toString(),
+            name = c.getString(nameCol) ?: "unnamed",
+            byteLength = c.getLong(sizeCol).toDouble(),
+            // DATE_TAKEN is ms but often 0; DATE_ADDED is seconds and always set
+            takenAt = (if (taken > 0) taken else c.getLong(addedCol) * 1000).toDouble(),
+            path = c.getString(dataCol) ?: ""
+          )
+        )
+      } while (out.size < limit.toInt() && c.moveToNext())
+    }
+    return out.toTypedArray()
+  }
+}

@@ -16,6 +16,7 @@ import b4a from 'b4a'
 import bundle from './worker.bundle.mjs'
 import { SAMPLE_PHOTO_BASE64 } from './src/sample-photo'
 import { documentsPath } from './src/paths'
+import { requestRollPermission, rollModule, type RollAsset } from './src/roll'
 
 type WorkerMessage =
   | { type: 'ready'; photos: number }
@@ -26,6 +27,8 @@ export default function App() {
   const [status, setStatus] = useState('starting worker…')
   const [link, setLink] = useState<string | null>(null)
   const [indexKey, setIndexKey] = useState<string | null>(null)
+  const [rollCount, setRollCount] = useState<number | null>(null)
+  const [rollPreview, setRollPreview] = useState<RollAsset[]>([])
   const streamRef = useRef<InstanceType<typeof FramedStream> | null>(null)
 
   useEffect(() => {
@@ -51,6 +54,23 @@ export default function App() {
     return () => worklet.terminate()
   }, [])
 
+  const openRoll = async () => {
+    // Movement 1: metadata only. The count and page come back synchronously
+    // through the typed seam — no bytes have moved yet.
+    const granted = await requestRollPermission()
+    if (!granted) {
+      setStatus('photo permission denied')
+      return
+    }
+    const roll = rollModule()
+    if (!roll) {
+      setStatus('ShoeboxRoll native module missing')
+      return
+    }
+    setRollCount(roll.count())
+    setRollPreview(roll.assets(0, 3))
+  }
+
   const importPhoto = () => {
     setStatus('importing…')
     streamRef.current?.write(
@@ -70,6 +90,18 @@ export default function App() {
       <Text style={styles.status}>{status}</Text>
 
       <Button title="Import one photo" onPress={importPhoto} />
+      <Button title="Open the roll" onPress={openRoll} />
+
+      {rollCount !== null && (
+        <View style={styles.rollBox}>
+          <Text style={styles.rollCount}>roll: {rollCount} photos</Text>
+          {rollPreview.map(a => (
+            <Text key={a.id} style={styles.rollLine}>
+              {a.name} · {(a.byteLength / 1024).toFixed(0)} KB
+            </Text>
+          ))}
+        </View>
+      )}
 
       {link && (
         // The photo renders through a localhost HTTP URL served by the worker's
@@ -95,6 +127,9 @@ const styles = StyleSheet.create({
   status: { fontSize: 14, color: '#666' },
   photo: { width: 192, height: 192, borderRadius: 8 },
   keyBox: { paddingHorizontal: 24, alignItems: 'center', gap: 4 },
+  rollBox: { alignItems: 'center', gap: 2 },
+  rollCount: { fontSize: 14, fontWeight: '600' },
+  rollLine: { fontSize: 12, color: '#666', fontFamily: 'Menlo' },
   keyLabel: { fontSize: 12, color: '#666' },
   key: { fontSize: 12, fontFamily: 'Menlo', textAlign: 'center' },
 })

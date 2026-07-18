@@ -18,6 +18,16 @@
         "language": "kotlin",
         "implementationClassName": "HybridShoeboxPaths"
       }
+    },
+    "ShoeboxRoll": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridShoeboxRoll"
+      },
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "HybridShoeboxRoll"
+      }
     }
   },
   "ignorePaths": ["node_modules"]

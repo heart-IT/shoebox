@@ -9,6 +9,7 @@ import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.soloader.OpenSourceMergedSoMapping
 import com.facebook.soloader.DirectorySoSource
 import com.facebook.soloader.SoLoader
+import com.margelo.nitro.shoebox.ShoeboxOnLoad
 import java.io.File
 
 class MainApplication : Application(), ReactApplication {
@@ -40,5 +41,9 @@ class MainApplication : Application(), ReactApplication {
       DirectorySoSource(File("/apex/com.android.art/$abiDir"), DirectorySoSource.ON_LD_LIBRARY_PATH)
     )
     loadReactNative(this)
+    // Loads libShoebox and registers our Nitro HybridObjects (ShoeboxPaths,
+    // ShoeboxRoll). Nitrogen generates this entry point but never calls it —
+    // without it createHybridObject throws "not registered … []".
+    ShoeboxOnLoad.initializeNative()
   }
 }

@@ -10,17 +10,26 @@
 // Forward declarations of C++ defined types
 // Forward declaration of `HybridShoeboxPathsSpec` to properly resolve imports.
 namespace margelo::nitro::shoebox { class HybridShoeboxPathsSpec; }
+// Forward declaration of `HybridShoeboxRollSpec` to properly resolve imports.
+namespace margelo::nitro::shoebox { class HybridShoeboxRollSpec; }
+// Forward declaration of `RollAsset` to properly resolve imports.
+namespace margelo::nitro::shoebox { struct RollAsset; }
 
 // Forward declarations of Swift defined types
 // Forward declaration of `HybridShoeboxPathsSpec_cxx` to properly resolve imports.
 namespace Shoebox { class HybridShoeboxPathsSpec_cxx; }
+// Forward declaration of `HybridShoeboxRollSpec_cxx` to properly resolve imports.
+namespace Shoebox { class HybridShoeboxRollSpec_cxx; }
 
 // Include C++ defined types
 #include "HybridShoeboxPathsSpec.hpp"
+#include "HybridShoeboxRollSpec.hpp"
+#include "RollAsset.hpp"
 #include <NitroModules/Result.hpp>
 #include <exception>
 #include <memory>
 #include <string>
+#include <vector>
 
 /**
  * Contains specialized versions of C++ templated types so they can be accessed from Swift,
@@ -47,6 +56,47 @@ namespace margelo::nitro::shoebox::bridge::swift {
   }
   inline Result_std__string_ create_Result_std__string_(const std::exception_ptr& error) noexcept {
     return Result<std::string>::withError(error);
+  }
+  
+  // pragma MARK: std::vector<RollAsset>
+  /**
+   * Specialized version of `std::vector<RollAsset>`.
+   */
+  using std__vector_RollAsset_ = std::vector<RollAsset>;
+  inline std::vector<RollAsset> create_std__vector_RollAsset_(size_t size) noexcept {
+    std::vector<RollAsset> vector;
+    vector.reserve(size);
+    return vector;
+  }
+  
+  // pragma MARK: std::shared_ptr<HybridShoeboxRollSpec>
+  /**
+   * Specialized version of `std::shared_ptr<HybridShoeboxRollSpec>`.
+   */
+  using std__shared_ptr_HybridShoeboxRollSpec_ = std::shared_ptr<HybridShoeboxRollSpec>;
+  std::shared_ptr<HybridShoeboxRollSpec> create_std__shared_ptr_HybridShoeboxRollSpec_(void* NON_NULL swiftUnsafePointer) noexcept;
+  void* NON_NULL get_std__shared_ptr_HybridShoeboxRollSpec_(std__shared_ptr_HybridShoeboxRollSpec_ cppType);
+  
+  // pragma MARK: std::weak_ptr<HybridShoeboxRollSpec>
+  using std__weak_ptr_HybridShoeboxRollSpec_ = std::weak_ptr<HybridShoeboxRollSpec>;
+  inline std__weak_ptr_HybridShoeboxRollSpec_ weakify_std__shared_ptr_HybridShoeboxRollSpec_(const std::shared_ptr<HybridShoeboxRollSpec>& strong) noexcept { return strong; }
+  
+  // pragma MARK: Result<double>
+  using Result_double_ = Result<double>;
+  inline Result_double_ create_Result_double_(double value) noexcept {
+    return Result<double>::withValue(std::move(value));
+  }
+  inline Result_double_ create_Result_double_(const std::exception_ptr& error) noexcept {
+    return Result<double>::withError(error);
+  }
+  
+  // pragma MARK: Result<std::vector<RollAsset>>
+  using Result_std__vector_RollAsset__ = Result<std::vector<RollAsset>>;
+  inline Result_std__vector_RollAsset__ create_Result_std__vector_RollAsset__(const std::vector<RollAsset>& value) noexcept {
+    return Result<std::vector<RollAsset>>::withValue(value);
+  }
+  inline Result_std__vector_RollAsset__ create_Result_std__vector_RollAsset__(const std::exception_ptr& error) noexcept {
+    return Result<std::vector<RollAsset>>::withError(error);
   }
 
 } // namespace margelo::nitro::shoebox::bridge::swift

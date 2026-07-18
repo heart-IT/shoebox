@@ -9,6 +9,7 @@
 
 // Include C++ implementation defined types
 #include "HybridShoeboxPathsSpecSwift.hpp"
+#include "HybridShoeboxRollSpecSwift.hpp"
 #include "Shoebox-Swift-Cxx-Umbrella.hpp"
 #include <NitroModules/NitroDefines.hpp>
 
@@ -27,6 +28,22 @@ namespace margelo::nitro::shoebox::bridge::swift {
     }
     #endif
     Shoebox::HybridShoeboxPathsSpec_cxx& swiftPart = swiftWrapper->getSwiftPart();
+    return swiftPart.toUnsafe();
+  }
+  
+  // pragma MARK: std::shared_ptr<HybridShoeboxRollSpec>
+  std::shared_ptr<HybridShoeboxRollSpec> create_std__shared_ptr_HybridShoeboxRollSpec_(void* NON_NULL swiftUnsafePointer) noexcept {
+    Shoebox::HybridShoeboxRollSpec_cxx swiftPart = Shoebox::HybridShoeboxRollSpec_cxx::fromUnsafe(swiftUnsafePointer);
+    return std::make_shared<margelo::nitro::shoebox::HybridShoeboxRollSpecSwift>(swiftPart);
+  }
+  void* NON_NULL get_std__shared_ptr_HybridShoeboxRollSpec_(std__shared_ptr_HybridShoeboxRollSpec_ cppType) {
+    std::shared_ptr<margelo::nitro::shoebox::HybridShoeboxRollSpecSwift> swiftWrapper = std::dynamic_pointer_cast<margelo::nitro::shoebox::HybridShoeboxRollSpecSwift>(cppType);
+    #ifdef NITRO_DEBUG
+    if (swiftWrapper == nullptr) [[unlikely]] {
+      throw std::runtime_error("Class \"HybridShoeboxRollSpec\" is not implemented in Swift!");
+    }
+    #endif
+    Shoebox::HybridShoeboxRollSpec_cxx& swiftPart = swiftWrapper->getSwiftPart();
     return swiftPart.toUnsafe();
   }
 

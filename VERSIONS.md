@@ -84,3 +84,25 @@ on-device Android run surfaced five integration traps, all fixed in-tree:
   mapping, then `prependSoSource(DirectorySoSource("/apex/com.android.art/
   lib64", ON_LD_LIBRARY_PATH))` before `loadReactNative`. Any RN new-arch
   app embedding bare-kit 0.15 needs this (peerBarter included).
+
+## Drift finding — Nitro init was never wired (found in ch02, latent since ch01)
+
+Nitrogen generates `ShoeboxOnLoad.initializeNative()` (Kotlin, loads libShoebox)
+and expects `cpp-adapter.cpp` to define the `JNI_OnLoad` that calls
+`registerAllNatives()` — but generates NEITHER call site. The ch01 scaffold left
+`cpp-adapter.cpp` empty (wrong comment: "JNI_OnLoad lives in ShoeboxOnLoad.cpp"
+— it does not; that file only defines `initialize(vm)`). Net effect: no Nitro
+HybridObject was ever registered. `documentsPath()` threw and hit its null
+fallback, so the ch01 vault silently stored to `os.tmpdir()` instead of the app
+documents dir — it "worked" by luck. Surfaced in ch02 only because `ShoeboxRoll`
+has no graceful fallback: `createHybridObject` threw "not registered … []".
+
+Two fixes, both required:
+- `android/nitro/cpp-adapter.cpp`: real `JNI_OnLoad` →
+  `facebook::jni::initialize(vm, []{ margelo::nitro::shoebox::registerAllNatives(); })`.
+- `MainApplication.onCreate`: call `ShoeboxOnLoad.initializeNative()` after
+  `loadReactNative`.
+
+Lesson for the blog: a null-guarded native accessor hides a dead native seam.
+Nitro modules must be verified by their VALUE on device, never by "the app
+didn't crash." peerBarter/any Nitro app needs both wirings.

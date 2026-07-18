@@ -23,4 +23,16 @@ public final class ShoeboxAutolinking {
   public static func isShoeboxPathsRecyclable() -> Bool {
     return HybridShoeboxPaths.self is any RecyclableView.Type
   }
+  
+  public static func createShoeboxRoll() -> bridge.std__shared_ptr_HybridShoeboxRollSpec_ {
+    let hybridObject = HybridShoeboxRoll()
+    return { () -> bridge.std__shared_ptr_HybridShoeboxRollSpec_ in
+      let __cxxWrapped = hybridObject.getCxxWrapper()
+      return __cxxWrapped.getCxxPart()
+    }()
+  }
+  
+  public static func isShoeboxRollRecyclable() -> Bool {
+    return HybridShoeboxRoll.self is any RecyclableView.Type
+  }
 }

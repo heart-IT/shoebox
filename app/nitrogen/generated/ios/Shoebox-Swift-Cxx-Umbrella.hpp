@@ -10,13 +10,20 @@
 // Forward declarations of C++ defined types
 // Forward declaration of `HybridShoeboxPathsSpec` to properly resolve imports.
 namespace margelo::nitro::shoebox { class HybridShoeboxPathsSpec; }
+// Forward declaration of `HybridShoeboxRollSpec` to properly resolve imports.
+namespace margelo::nitro::shoebox { class HybridShoeboxRollSpec; }
+// Forward declaration of `RollAsset` to properly resolve imports.
+namespace margelo::nitro::shoebox { struct RollAsset; }
 
 // Include C++ defined types
 #include "HybridShoeboxPathsSpec.hpp"
+#include "HybridShoeboxRollSpec.hpp"
+#include "RollAsset.hpp"
 #include <NitroModules/Result.hpp>
 #include <exception>
 #include <memory>
 #include <string>
+#include <vector>
 
 // C++ helpers for Swift
 #include "Shoebox-Swift-Cxx-Bridge.hpp"
@@ -30,6 +37,8 @@ namespace margelo::nitro::shoebox { class HybridShoeboxPathsSpec; }
 // Forward declarations of Swift defined types
 // Forward declaration of `HybridShoeboxPathsSpec_cxx` to properly resolve imports.
 namespace Shoebox { class HybridShoeboxPathsSpec_cxx; }
+// Forward declaration of `HybridShoeboxRollSpec_cxx` to properly resolve imports.
+namespace Shoebox { class HybridShoeboxRollSpec_cxx; }
 
 // Include Swift defined types
 #if __has_include("Shoebox-Swift.h")
