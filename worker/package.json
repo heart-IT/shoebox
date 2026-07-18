@@ -11,6 +11,7 @@
     "b4a": "^1.8.1",
     "bare-os": "^3.0.0",
     "bare-path": "^3.0.0",
+    "bare-rpc": "^1.3.8",
     "corestore": "^7.11.0",
     "framed-stream": "^1.0.1",
     "hyperblobs": "^2.12.1",

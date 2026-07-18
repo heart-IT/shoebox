@@ -56,6 +56,7 @@ namespace margelo::nitro::shoebox {
     // Methods
     double count() override;
     std::vector<RollAsset> assets(double offset, double limit) override;
+    std::string readBase64(const std::string& path) override;
 
   private:
     jni::global_ref<JHybridShoeboxRollSpec::JavaPart> _javaPart;

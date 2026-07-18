@@ -31,4 +31,10 @@ export interface ShoeboxRoll
   count(): number
   /** A stable page of the roll, newest first. */
   assets(offset: number, limit: number): RollAsset[]
+  /**
+   * Movement 2's naive read: the whole asset as a base64 string. This is the
+   * per-byte cost the chapter measures — the file is copied into a JS string
+   * ~1.33× its size, then that string crosses the IPC. Movement 3 replaces it.
+   */
+  readBase64(path: string): string
 }

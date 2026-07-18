@@ -67,5 +67,10 @@ namespace margelo::nitro::shoebox {
       return __vector;
     }(__result);
   }
+  std::string JHybridShoeboxRollSpec::readBase64(const std::string& path) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JString>(jni::alias_ref<jni::JString> /* path */)>("readBase64");
+    auto __result = method(_javaPart, jni::make_jstring(path));
+    return __result->toStdString();
+  }
 
 } // namespace margelo::nitro::shoebox

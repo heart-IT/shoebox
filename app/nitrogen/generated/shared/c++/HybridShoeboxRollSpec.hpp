@@ -18,6 +18,7 @@ namespace margelo::nitro::shoebox { struct RollAsset; }
 
 #include "RollAsset.hpp"
 #include <vector>
+#include <string>
 
 namespace margelo::nitro::shoebox {
 
@@ -52,6 +53,7 @@ namespace margelo::nitro::shoebox {
       // Methods
       virtual double count() = 0;
       virtual std::vector<RollAsset> assets(double offset, double limit) = 0;
+      virtual std::string readBase64(const std::string& path) = 0;
 
     protected:
       // Hybrid Setup

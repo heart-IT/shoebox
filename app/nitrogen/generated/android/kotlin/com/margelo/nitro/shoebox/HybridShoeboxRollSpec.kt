@@ -35,6 +35,10 @@ abstract class HybridShoeboxRollSpec: HybridObject() {
   @DoNotStrip
   @Keep
   abstract fun assets(offset: Double, limit: Double): Array<RollAsset>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun readBase64(path: String): String
 
   // Default implementation of `HybridObject.toString()`
   override fun toString(): String {

@@ -1,7 +1,9 @@
 package com.margelo.nitro.shoebox
 
 import android.provider.MediaStore
+import android.util.Base64
 import com.margelo.nitro.NitroModules
+import java.io.File
 
 class HybridShoeboxRoll : HybridShoeboxRollSpec() {
   private val resolver
@@ -56,5 +58,13 @@ class HybridShoeboxRoll : HybridShoeboxRollSpec() {
       } while (out.size < limit.toInt() && c.moveToNext())
     }
     return out.toTypedArray()
+  }
+
+  // The naive path (Movement 2): whole file → bytes → base64 String, handed to
+  // JS. Every byte is copied at least twice (read buffer, then base64), and the
+  // result lands on the JS heap. Movement 3 hands over an mmap'd region instead.
+  override fun readBase64(path: String): String {
+    val bytes = File(path).readBytes()
+    return Base64.encodeToString(bytes, Base64.NO_WRAP)
   }
 }

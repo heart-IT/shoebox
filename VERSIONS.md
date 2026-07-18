@@ -106,3 +106,20 @@ Two fixes, both required:
 Lesson for the blog: a null-guarded native accessor hides a dead native seam.
 Nitro modules must be verified by their VALUE on device, never by "the app
 didn't crash." peerBarter/any Nitro app needs both wirings.
+
+## Ch02 Movement 2 — bare-rpc + naive-import baseline (measured on device)
+
+- **bare-rpc 1.3.8** is the channel-ladder rung 2, replacing Ch1's framed-stream
+  JSON. It self-frames over the raw `BareKit.IPC`, so framed-stream is dropped.
+- **Two integration traps:**
+  1. bare-rpc pulls `bare-stream` (a Bare builtin) even for request/reply — it's
+     only a `streamx` re-export, so the app aliases `bare-stream → streamx` in
+     `metro.config.js` (`extraNodeModules`) to run the same RPC on Hermes.
+  2. **Commands are uints, not strings.** bare-rpc encodes `command` with
+     `c.uint` (lib/messages.js) — passing a string throws
+     "uint must be positive". Both ends share an integer `CMD` map.
+- Naive read: `ShoeboxRoll.readBase64(path)` (Kotlin `File.readBytes()` →
+  `Base64.NO_WRAP`) → JS string → JSON → RPC → worker → Hyperblobs.
+- **Baseline (30 photos, 16.3 MB, this device):** 1.84 MB/s, 8.9 s wall,
+  **796 ms worst JS-thread stall** (~48 dropped frames), **7.73 MB peak
+  in-flight base64**. These are Movement 3's target to beat.

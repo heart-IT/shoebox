@@ -16,6 +16,12 @@ class HybridShoeboxRoll: HybridShoeboxRollSpec {
     return Double(fetchAll().count)
   }
 
+  func readBase64(path: String) throws -> String {
+    // iOS: PHAsset has no stable path, so this is unverified — byte access on
+    // iOS arrives with the import movements via PHAssetResource requests.
+    return (try? Data(contentsOf: URL(fileURLWithPath: path)))?.base64EncodedString() ?? ""
+  }
+
   func assets(offset: Double, limit: Double) throws -> [RollAsset] {
     let all = fetchAll()
     var out: [RollAsset] = []

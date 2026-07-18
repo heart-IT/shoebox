@@ -85,6 +85,14 @@ namespace margelo::nitro::shoebox {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline std::string readBase64(const std::string& path) override {
+      auto __result = _swiftPart.readBase64(path);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
 
   private:
     Shoebox::HybridShoeboxRollSpec_cxx _swiftPart;
