@@ -16,6 +16,7 @@ import bundle from './worker.bundle.mjs'
 import { SAMPLE_PHOTO_BASE64 } from './src/sample-photo'
 import { documentsPath } from './src/paths'
 import { requestRollPermission, rollModule, type RollAsset } from './src/roll'
+import { bytesModule } from './src/bytes'
 import { VaultClient } from './src/vault-client'
 import { Meter, type Reading } from './src/meter'
 
@@ -116,15 +117,19 @@ export default function App() {
       await clientRef.current!.importPhoto(a.name, base64)
     })
 
-  // Movement 3 — mmap'd raw bytes: no base64, no JSON. The ArrayBuffer rides the
-  // RPC as-is. Same workload as naive; the meter tells the difference.
-  const importRollZeroCopy = () =>
-    measuredImport('mmap bytes', async (roll, a, meter) => {
-      const buf: ArrayBuffer = roll.readBytes(a.path)
-      const bytes = new Uint8Array(buf)
-      meter.recordInFlight(bytes.length)
-      await clientRef.current!.importRaw(a.name, bytes)
+  // Movement 3 — hand-rolled C++ mmap: mapFile returns an ArrayBuffer that
+  // points straight at the file's mapped pages (zero copy), released on GC. No
+  // base64, no JSON. Same workload as naive; the meter tells the difference.
+  const importRollZeroCopy = () => {
+    const bytes = bytesModule()
+    if (!bytes) return setStatus('ShoeboxBytes native module missing')
+    return measuredImport('mmap bytes (C++)', async (_roll, a, meter) => {
+      const buf: ArrayBuffer = bytes.mapFile(a.path)
+      const view = new Uint8Array(buf)
+      meter.recordInFlight(view.length)
+      await clientRef.current!.importRaw(a.name, view)
     })
+  }
 
   return (
     <SafeAreaView style={styles.root}>

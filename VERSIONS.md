@@ -151,3 +151,31 @@ raw bytes via a new IMPORT_RAW command framed `[u16 LE nameLen][name][bytes]`.
   Nitro's zero-copy wrap ctor is `internal`. True no-copy — `ArrayBuffer::wrap`
   over the mmap with an explicit `munmap` release (Inv-3) — is C++-only and is
   the hand-rolled read-along ideal, deferred pending the M3/M4 shape decision.
+
+## Ch02 Movement 3 (C++ zero-copy) — hand-rolled mmap HybridObject
+
+`ShoeboxBytes.mapFile(path): ArrayBuffer` — a C++-base Nitro HybridObject
+(nitro.json `"all": { language: "c++" }`). Opens the file, `mmap`s it read-only,
+and returns `ArrayBuffer::wrap(pages, size, [](){ munmap })` — the mapped pages
+ARE the ArrayBuffer (no copy), unmapped only when JS drops the buffer (Inv-3,
+explicit lifetime by hand).
+
+- **Build wiring:** the generated `ShoeboxOnLoad.cpp` `#include`s and constructs
+  `HybridShoeboxBytes`, so `app/cpp/HybridShoeboxBytes.cpp` is added to the
+  Shoebox CMake target and `app/cpp` to its include dirs (in the app CMakeLists,
+  not the generated file). `nitro.json` c++ modules use the `"all"` autolinking
+  key, not the deprecated `"cpp"`.
+- **Result (same 30 photos / 16.3 MB):**
+  | path | throughput | JS stall | note |
+  |---|---|---|---|
+  | naive base64 | 1.84 MB/s | 796 ms | base64 on JS heap |
+  | Kotlin mmap+copy | 2.95 MB/s | 42 ms | one owning copy |
+  | **C++ mmap zero-copy** | **2.45 MB/s** | **35 ms** | mapped pages, no heap copy |
+- **Honest nuance for the blog:** zero-copy's win here is MEMORY, not
+  throughput. The two mmap paths' throughput differ within run-to-run variance
+  (mmap faults pages lazily; the IPC copy + Hyperblobs write dominate either
+  way). What C++ zero-copy uniquely removes is the heap copy — the bytes never
+  land on any JS/native heap, they're the file's own pages. The meter's
+  "peak in-flight" reads the same JS-side view length for both; the real native
+  RSS difference (mapped pages vs a heap-allocated copy) is below what the
+  on-screen meter captures. The stall win (the base64 story) is what both share.

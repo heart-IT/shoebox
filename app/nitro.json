@@ -28,6 +28,12 @@
         "language": "kotlin",
         "implementationClassName": "HybridShoeboxRoll"
       }
+    },
+    "ShoeboxBytes": {
+      "all": {
+        "language": "c++",
+        "implementationClassName": "HybridShoeboxBytes"
+      }
     }
   },
   "ignorePaths": ["node_modules"]

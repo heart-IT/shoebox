@@ -18,6 +18,7 @@
 #include "JHybridShoeboxPathsSpec.hpp"
 #include "JHybridShoeboxRollSpec.hpp"
 #include <NitroModules/DefaultConstructableObject.hpp>
+#include "HybridShoeboxBytes.hpp"
 
 namespace margelo::nitro::shoebox {
 
@@ -63,6 +64,15 @@ void registerAllNatives() {
     "ShoeboxRoll",
     []() -> std::shared_ptr<HybridObject> {
       return JHybridShoeboxRollSpecImpl::create();
+    }
+  );
+  HybridObjectRegistry::registerHybridObjectConstructor(
+    "ShoeboxBytes",
+    []() -> std::shared_ptr<HybridObject> {
+      static_assert(std::is_default_constructible_v<HybridShoeboxBytes>,
+                    "The HybridObject \"HybridShoeboxBytes\" is not default-constructible! "
+                    "Create a public constructor that takes zero arguments to be able to autolink this HybridObject.");
+      return std::make_shared<HybridShoeboxBytes>();
     }
   );
 }

@@ -20,6 +20,13 @@ include(${REACT_ANDROID_DIR}/cmake-utils/ReactNative-application.cmake)
 # silently breaking every TurboModule at boot.
 add_library(Shoebox SHARED
   nitro/cpp-adapter.cpp
+  # Movement 3: the hand-rolled C++ mmap HybridObject. The generated
+  # ShoeboxOnLoad.cpp #includes and constructs it, so both the source and its
+  # header directory must reach this target.
+  ../cpp/HybridShoeboxBytes.cpp
 )
+
+# app/cpp holds the hand-written C++ HybridObject impl + header.
+target_include_directories(Shoebox PRIVATE ${CMAKE_SOURCE_DIR}/../cpp)
 
 include(${CMAKE_SOURCE_DIR}/../nitrogen/generated/android/Shoebox+autolinking.cmake)

@@ -33,6 +33,7 @@ target_sources(
   # Autolinking Setup
   ../nitrogen/generated/android/ShoeboxOnLoad.cpp
   # Shared Nitrogen C++ sources
+  ../nitrogen/generated/shared/c++/HybridShoeboxBytesSpec.cpp
   ../nitrogen/generated/shared/c++/HybridShoeboxPathsSpec.cpp
   ../nitrogen/generated/shared/c++/HybridShoeboxRollSpec.cpp
   # Android-specific Nitrogen C++ sources
