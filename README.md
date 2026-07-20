@@ -11,8 +11,10 @@ thumbnail, or the search index. Companion repo to the
 - `worker/` — the host-agnostic vault worker. Runs unchanged under Bare (phone)
   and Node (tests, desktop mirror). `index.js` is the worklet entry (IPC wiring
   only); `vault.js` is the core.
-- `desktop/` — desktop peers. `peek.mjs` is Chapter 1's closing teaser: paste an
-  index key, watch the photo replicate to your laptop with no server anywhere.
+- `desktop/` — desktop peers. `peek.mjs` is a read-only replica (Chapter 1's
+  teaser: paste a library key, watch the photo replicate to your laptop with no
+  server anywhere — but see the encryption note below). `join.mjs` (Chapter 5) is
+  the writer counterpart: it pairs via an invite and joins as a second device.
 
 ## Run (Chapter 1)
 
@@ -27,10 +29,16 @@ npm run bundle:worker            # bare-pack → worker.bundle.mjs
 # iOS: cd ios && pod install && cd .. && npm run ios
 # Android: npm run android
 
-# the teaser — paste the index key the app shows after import
+# the teaser — paste the library key the app shows after import
 cd ../desktop && npm install
-node peek.mjs <index-key>
+node peek.mjs <library-key>
 ```
+
+> **Encryption note (Chapter 7):** the phone's album is now encrypted, so a bare
+> `peek.mjs <library-key>` replicates ciphertext and reads EMPTY — that is the
+> point: the album is private to key-holders. To actually read it, pass the album
+> key: `node peek.mjs <library-key> <album-key-hex>`. (Surfacing that key from the
+> app — an export/QR flow — is a later milestone; see the encryption chapter.)
 
 Nitro codegen (`npx nitrogen`) only needs re-running when `src/specs/*.nitro.ts`
 changes; the generated output in `nitrogen/generated/` is committed.
@@ -44,6 +52,8 @@ changes; the generated output in `nitrogen/generated/` is committed.
 | `ch03-the-library` | A time-ordered photo grid over the vault: the index is a **Hyperbee** keyed by capture-time (range queries), records are **Hyperschema**/compact-encoding (append-only, Inv-4). The worker generates ≤256px **bare-media** thumbnails shipped as `data:` URLs; a windowed **FlashList** grid paints from the index, and originals load lazily on tap via the blob-server |
 | `ch04-search` | Search that never leaves the phone: a **dHash** near-duplicate column computed in the worker, and a MobileNet **embedding** run on the device's neural HW (**TFLite + NNAPI** behind a Nitro module) written into the index. "Find similar" and "near-duplicates" run offline as Hamming/cosine over the index columns — nothing leaves the device (Inv-5) |
 | `ch05-second-device` | The index becomes an **Autobase**: each device has its own writer keypair (a seed-derived identity) and appends to its own log; a deterministic `apply()` in `worker/library.js` linearizes every writer into one shared view. A second device pairs via a one-time **blind-pairing** invite → `addWriter` (gated in `apply`), then imports converge both ways. `desktop/join.mjs` joins as a *writer* (vs `peek.mjs`, a read-only replica). Photo bytes stay in per-device Hyperblobs cores the view points at — your second device is an identity, not a copy |
+| `ch06-many-hands` | Authority becomes **data in the view**: a second `roles` bee (writer-key → `owner`/`member`) alongside the photos index. The founder self-claims **owner** on first boot; `apply()` tightens `ADD_WRITER` to owner-only and grants the added writer `member`. `REMOVE_WRITER` (owner-only) **revokes forward** — a kicked member loses future writes but keeps already-shared photos (Inv-8). A Members screen with a Kick action; `join.mjs` logs `unwritable` on revocation |
+| `ch07-private-album` *(on `main`, untagged)* | The album is **encrypted**: a 32-byte album key (seed-derived) encrypts the Autobase log, views, and blob cores, so photos are private on the wire and at rest — a peer with only the library key replicates ciphertext and reads nothing. The key reaches a new device **through pairing** (inside the blind-pairing confirm, never over the DHT). **Revocation rotates the content key** (Inv-9): the album key is *membership*, but each photo's browsable content (thumbnail + bytes) is sealed under a separate **content key** that rotates when a member is kicked — the new key is sealed per remaining member (libsodium anonymous box) and carried in the log, so a kicked member keeps the album key and sees the album, but every photo added after the kick is redacted for them. Forward-only: their pre-kick content stays readable |
 
 Each measured import path is a button in the app; the on-screen meter reports
 throughput, worst JS-thread stall, and peak in-flight bytes. See `VERSIONS.md`
@@ -55,7 +65,9 @@ for the per-movement drift findings and numbers.
   `list()` that returns every record — base64 `data:` thumbnail and float32
   embedding inline — and holds it in state. Fine at demo scale (hundreds of
   photos); a real 10k+ library needs a windowed/paginated `LIST` plus thumbnails
-  served over the blob-server as URLs (like originals). Serving thumbnails as
-  blobs is blocked by the append-only schema — a thumb-blob pointer would push
-  past the 7-optional-field flag-byte cliff (see `worker/build-schema.mjs`) — so
-  it's deliberately left for a later chapter rather than bolted on here.
+  served over the blob-server as URLs (like originals). Moving thumbnails out of
+  the record to blob pointers means adding more optional schema fields — safe
+  under the append-only contract (Inv-4) — so it's deliberately left for a later
+  chapter rather than bolted on here. (An earlier note here claimed a
+  "flag-byte cliff" blocked this; that was wrong — the codegen handles >7 optional
+  fields via variable-width flags. See `worker/build-schema.mjs`.)

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
+  Alert,
   AppState,
   Button,
   Image,
@@ -40,13 +41,18 @@ export default function App() {
   const [showMembers, setShowMembers] = useState(false)
   const [members, setMembers] = useState<{ writerKey: string; role: string }[]>([])
   const clientRef = useRef<VaultClient | null>(null)
+  // Reentrancy guard: import buttons don't disable themselves, so a double-tap
+  // (or tapping a second import mid-run) would interleave two batches into the
+  // vault and stomp the meter/status. One import at a time.
+  const busyRef = useRef(false)
 
   useEffect(() => {
     const worklet = new Worklet()
     // Filename must end in .bundle; argv[0] is the storage base.
     worklet.start('/worker.bundle', bundle, [documentsPath() ?? ''])
 
-    const client = new VaultClient(worklet.IPC)
+    // Surface a failed/dead worker instead of a stale "vault ready".
+    const client = new VaultClient(worklet.IPC, msg => setStatus(`worker error: ${msg}`))
     clientRef.current = client
 
     client
@@ -82,6 +88,8 @@ export default function App() {
   }
 
   const importOne = async () => {
+    if (busyRef.current) return
+    busyRef.current = true
     setStatus('importing…')
     try {
       const res = await clientRef.current!.importPhoto('hallway.png', SAMPLE_PHOTO_BASE64)
@@ -90,6 +98,8 @@ export default function App() {
       setStatus('stored — no server involved')
     } catch (e) {
       setStatus(`import failed: ${String(e)}`)
+    } finally {
+      busyRef.current = false
     }
   }
 
@@ -118,6 +128,15 @@ export default function App() {
     }
   }
 
+  // Revocation is forward-irreversible (the member can't be un-revoked into their
+  // old identity), so confirm before kicking.
+  const confirmKick = (writerKey: string) => {
+    Alert.alert('Remove member?', `Revoke ${writerKey.slice(0, 12)}…? Their future writes stop; photos they already shared remain.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => kick(writerKey) },
+    ])
+  }
+
   const kick = async (writerKey: string) => {
     setStatus('revoking…')
     try {
@@ -136,12 +155,14 @@ export default function App() {
     label: string,
     step: (roll: any, a: RollAsset, meter: Meter) => Promise<void>,
   ) => {
+    if (busyRef.current) return
     const granted = await requestRollPermission()
     if (!granted) return setStatus('photo permission denied')
     const roll = rollModule()
     const client = clientRef.current
     if (!roll || !client) return setStatus('roll or vault unavailable')
 
+    busyRef.current = true
     const n = Math.min(BATCH, roll.count())
     const assets = roll.assets(0, n)
     setReading(null)
@@ -150,23 +171,27 @@ export default function App() {
     const meter = new Meter()
     meter.start(Date.now())
     let failures = 0
-    for (const a of assets) {
-      if (!a.path) continue // skip assets with no readable path (iOS)
-      try {
-        // Per-photo isolation: one unreadable/corrupt file must not abort the
-        // whole batch.
-        await step(roll, a, meter)
-        meter.recordPhoto(a.byteLength)
-      } catch {
-        failures++
+    try {
+      for (const a of assets) {
+        if (!a.path) continue // skip assets with no readable path (iOS)
+        try {
+          // Per-photo isolation: one unreadable/corrupt file must not abort the
+          // whole batch.
+          await step(roll, a, meter)
+          meter.recordPhoto(a.byteLength)
+        } catch {
+          failures++
+        }
       }
+      const r = meter.stop(Date.now())
+      setReading(r)
+      setReadingLabel(label)
+      const s = await client.stat().catch(() => null)
+      const skipped = failures ? ` (${failures} skipped)` : ''
+      setStatus(`imported ${r.photos} (${label})${skipped}${s ? ` · vault now ${s.photos}` : ''}`)
+    } finally {
+      busyRef.current = false
     }
-    const r = meter.stop(Date.now())
-    setReading(r)
-    setReadingLabel(label)
-    const s = await client.stat().catch(() => null)
-    const skipped = failures ? ` (${failures} skipped)` : ''
-    setStatus(`imported ${r.photos} (${label})${skipped}${s ? ` · vault now ${s.photos}` : ''}`)
   }
 
   // Movement 2 — the measured wrong way: base64 string per photo over the RPC.
@@ -224,7 +249,7 @@ export default function App() {
               <Text style={{ color: '#ccc', fontFamily: 'Menlo', fontSize: 13 }}>
                 {m.role} · {m.writerKey.slice(0, 12)}…
               </Text>
-              {m.role !== 'owner' && <Button title="Kick" onPress={() => kick(m.writerKey)} />}
+              {m.role !== 'owner' && <Button title="Kick" onPress={() => confirmKick(m.writerKey)} />}
             </View>
           ))}
           {members.length === 0 && <Text style={styles.status}>No members yet.</Text>}
@@ -290,7 +315,7 @@ export default function App() {
 
         {indexKey && (
           <View style={styles.keyBox}>
-            <Text style={styles.keyLabel}>On a laptop: node peek.mjs {'↓'}</Text>
+            <Text style={styles.keyLabel}>Library key (encrypted — peek needs the album key too) {'↓'}</Text>
             <Text style={styles.key} selectable>
               {indexKey}
             </Text>

@@ -22,12 +22,15 @@
     "hyperbee": "^2.27.3",
     "hyperblobs": "^2.12.1",
     "hypercore-blob-server": "^1.15.0",
+    "hypercore-crypto": "^3.7.0",
     "hypercore-id-encoding": "^1.3.0",
     "hyperschema": "^1.21.0",
-    "hyperswarm": "^4.17.0"
+    "hyperswarm": "^4.17.0",
+    "z32": "^1.1.0"
   },
   "devDependencies": {
     "bare-link": "^3.3.0",
-    "bare-pack": "^2.2.0"
+    "bare-pack": "^2.2.0",
+    "hyperdht": "^6.33.0"
   }
 }

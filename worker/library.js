@@ -11,11 +11,15 @@ const c = require('compact-encoding')
 const b4a = require('b4a')
 const { resolveStruct } = require('./spec')
 
-// The photo record is the generated Hyperschema struct (compact-encoding).
-const photoEncoding = resolveStruct('@shoebox/photo', 1)
+// The photo record is the generated Hyperschema struct (compact-encoding) at the
+// CURRENT schema version — v2 adds the optional `epoch` field (Ch7 M3). Older
+// records (v1, no epoch) still decode: the flag bit is simply absent → epoch 0.
+const photoEncoding = resolveStruct('@shoebox/photo')
 
 // Commands on the log are a tagged union: a uint type, then the payload.
-const CMD = { IMPORT_PHOTO: 1, ADD_WRITER: 2, SET_ROLE: 3, REMOVE_WRITER: 4 }
+const CMD = { IMPORT_PHOTO: 1, ADD_WRITER: 2, SET_ROLE: 3, REMOVE_WRITER: 4, ROTATE_KEY: 5 }
+
+const EMPTY = b4a.alloc(0)
 
 // Roles are the album's authority model. The founder is the OWNER; invited
 // people are MEMBERS. Owners manage membership; members add photos.
@@ -25,23 +29,29 @@ const commandEncoding = {
   preencode (state, cmd) {
     c.uint.preencode(state, cmd.type)
     if (cmd.type === CMD.IMPORT_PHOTO) photoEncoding.preencode(state, cmd.photo)
-    else if (cmd.type === CMD.ADD_WRITER) c.fixed32.preencode(state, cmd.writerKey)
+    // ADD_WRITER carries the joiner's box public key (Ch7 M3) so the owner can
+    // seal rotated content keys to it. A length-prefixed buffer — empty when a
+    // caller (Ch5/Ch6, unencrypted) adds a writer without one.
+    else if (cmd.type === CMD.ADD_WRITER) { c.fixed32.preencode(state, cmd.writerKey); c.buffer.preencode(state, cmd.boxKey || EMPTY) }
     else if (cmd.type === CMD.REMOVE_WRITER) c.fixed32.preencode(state, cmd.writerKey)
     else if (cmd.type === CMD.SET_ROLE) { c.fixed32.preencode(state, cmd.writerKey); c.string.preencode(state, cmd.role) }
+    else if (cmd.type === CMD.ROTATE_KEY) { c.uint.preencode(state, cmd.epoch); c.uint.preencode(state, cmd.entries.length); for (const e of cmd.entries) { c.fixed32.preencode(state, e.writerKey); c.buffer.preencode(state, e.sealed) } }
   },
   encode (state, cmd) {
     c.uint.encode(state, cmd.type)
     if (cmd.type === CMD.IMPORT_PHOTO) photoEncoding.encode(state, cmd.photo)
-    else if (cmd.type === CMD.ADD_WRITER) c.fixed32.encode(state, cmd.writerKey)
+    else if (cmd.type === CMD.ADD_WRITER) { c.fixed32.encode(state, cmd.writerKey); c.buffer.encode(state, cmd.boxKey || EMPTY) }
     else if (cmd.type === CMD.REMOVE_WRITER) c.fixed32.encode(state, cmd.writerKey)
     else if (cmd.type === CMD.SET_ROLE) { c.fixed32.encode(state, cmd.writerKey); c.string.encode(state, cmd.role) }
+    else if (cmd.type === CMD.ROTATE_KEY) { c.uint.encode(state, cmd.epoch); c.uint.encode(state, cmd.entries.length); for (const e of cmd.entries) { c.fixed32.encode(state, e.writerKey); c.buffer.encode(state, e.sealed) } }
   },
   decode (state) {
     const type = c.uint.decode(state)
     if (type === CMD.IMPORT_PHOTO) return { type, photo: photoEncoding.decode(state) }
-    if (type === CMD.ADD_WRITER) return { type, writerKey: c.fixed32.decode(state) }
+    if (type === CMD.ADD_WRITER) { const writerKey = c.fixed32.decode(state); const bk = c.buffer.decode(state); return { type, writerKey, boxKey: bk && bk.byteLength === 32 ? bk : null } }
     if (type === CMD.REMOVE_WRITER) return { type, writerKey: c.fixed32.decode(state) }
     if (type === CMD.SET_ROLE) return { type, writerKey: c.fixed32.decode(state), role: c.string.decode(state) }
+    if (type === CMD.ROTATE_KEY) { const epoch = c.uint.decode(state); const n = c.uint.decode(state); const entries = []; for (let i = 0; i < n; i++) entries.push({ writerKey: c.fixed32.decode(state), sealed: c.buffer.decode(state) }); return { type, epoch, entries } }
     return { type }
   }
 }
@@ -53,6 +63,11 @@ function openView (store) {
   return {
     photos: new Hyperbee(store.get('view'), { keyEncoding: 'binary', valueEncoding: photoEncoding, extension: false }),
     roles: new Hyperbee(store.get('roles'), { keyEncoding: 'utf-8', valueEncoding: 'utf-8', extension: false }),
+    // Ch7 M3. members: writer-key hex → box public-key hex (so the owner can seal
+    // rotated content keys to each member). rotations: epoch → the sealed content
+    // keys for that epoch, one per member who held access when it was minted.
+    members: new Hyperbee(store.get('members'), { keyEncoding: 'utf-8', valueEncoding: 'utf-8', extension: false }),
+    rotations: new Hyperbee(store.get('rotations'), { keyEncoding: 'binary', valueEncoding: 'utf-8', extension: false }),
   }
 }
 
@@ -67,7 +82,10 @@ async function apply (nodes, view, host) {
       // Any writer may import; a removed writer simply can't append new blocks.
       const p = cmd.photo
       if (!p || !p.blobsCoreKey) continue
-      const key = photoKey(p.takenAt, p.name, disambiguator(p))
+      // Bind the key to the AUTHORING writer (autobase-attested, not record-supplied)
+      // so a member can't shadow another member's photo by reusing their
+      // blobsCoreKey+byteOffset: a forgery keys under the forger's own identity.
+      const key = photoKey(p.takenAt, p.name, disambiguator(p, author))
       if (await view.photos.get(key)) continue // idempotent
       await view.photos.put(key, p)
     } else if (cmd.type === CMD.SET_ROLE) {
@@ -86,11 +104,16 @@ async function apply (nodes, view, host) {
       const key = cmd.writerKey
       if (!key || key.byteLength !== 32) continue
       if (!author || await roleOf(view.roles, author) !== ROLE.OWNER) continue
-      // Gate re-admission on OUR roles view, not host.system.has(): system.has() stays
-      // true for REMOVED writers, so re-adding a revoked member would skip addWriter
-      // and leave a phantom (role set, never writable again).
-      if (!(await roleOf(view.roles, key))) await host.addWriter(key, { indexer: false })
+      const existing = await roleOf(view.roles, key)
+      if (existing === ROLE.OWNER) continue // already the owner — never demote to member
+      // Gate re-admission on OUR roles view, NOT host.system.has(): system.has()
+      // returns true for REMOVED writers, so re-adding a revoked member would skip
+      // addWriter and leave a phantom — role set, but never writable again.
+      if (!existing) await host.addWriter(key, { indexer: false })
       await view.roles.put(roleKey(key), ROLE.MEMBER)
+      // Register the member's box public key so the owner can seal rotated content
+      // keys to it (Ch7 M3). Absent for a Ch5/Ch6 (unencrypted) add.
+      if (cmd.boxKey) await view.members.put(roleKey(key), b4a.toString(cmd.boxKey, 'hex'))
     } else if (cmd.type === CMD.REMOVE_WRITER) {
       // Revocation — OWNER-only. Stops the member's FUTURE writes; their already-
       // shared photos remain, because the log is append-only (Inv-8: you can
@@ -102,7 +125,17 @@ async function apply (nodes, view, host) {
       if (host.removeable(key)) {
         await host.removeWriter(key)
         await view.roles.del(roleKey(key))
+        await view.members.del(roleKey(key)) // drop their box key from the roster
       }
+    } else if (cmd.type === CMD.ROTATE_KEY) {
+      // Content-key rotation — OWNER-only (Ch7 M3). Records the new epoch's content
+      // key, individually SEALED to each remaining member's box key, so a member can
+      // find and open its own copy. A removed member simply has no entry here, so the
+      // photos encrypted under this epoch stay redacted for them forever.
+      if (!author || await roleOf(view.roles, author) !== ROLE.OWNER) continue
+      const sealed = {}
+      for (const e of cmd.entries) sealed[roleKey(e.writerKey)] = b4a.toString(e.sealed, 'hex')
+      await view.rotations.put(epochKey(cmd.epoch), JSON.stringify(sealed))
     }
   }
 }
@@ -115,9 +148,40 @@ async function hasOwner (roles) {
   return false
 }
 
-// A blob's GLOBALLY-unique address: which device's core + the byte offset in it.
-function disambiguator (record) {
-  return b4a.toString(record.blobsCoreKey, 'hex') + ':' + record.byteOffset
+// --- content-key epochs (Ch7 M3) ---
+// Epochs key the `rotations` bee big-endian so peek({reverse}) is the latest.
+function epochKey (n) { const b = b4a.alloc(4); b[0] = (n >>> 24) & 0xff; b[1] = (n >>> 16) & 0xff; b[2] = (n >>> 8) & 0xff; b[3] = n & 0xff; return b }
+function readEpoch (buf) { return ((buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]) >>> 0 }
+
+// The album's current content epoch: the highest rotation recorded, or 0 (genesis,
+// no rotation yet). Every import tags its photo with this so reads know which key.
+async function currentEpoch (view) {
+  const node = await view.rotations.peek({ reverse: true })
+  return node ? readEpoch(node.key) : 0
+}
+
+// The sealed content keys for an epoch: { writerKeyHex: sealedHex }. A device finds
+// its own entry by its writer key and opens it with its box secret key.
+async function sealedKeysFor (view, epoch) {
+  const node = await view.rotations.get(epochKey(epoch))
+  return node ? JSON.parse(node.value) : null
+}
+
+// Every current member's box public key: [{ writerKeyHex, boxKey }]. What the owner
+// seals a fresh content key to on rotation.
+async function memberBoxKeys (view) {
+  const out = []
+  for await (const { key, value } of view.members.createReadStream()) out.push({ writerKeyHex: key, boxKey: b4a.from(value, 'hex') })
+  return out
+}
+
+// A blob's GLOBALLY-unique, forgery-resistant address: the AUTHORING writer +
+// which device's core + the byte offset in it. The author is attested by autobase
+// (node.from.key), not taken from the record, so a member can't mint a key that
+// collides with another member's genuine photo.
+function disambiguator (record, author) {
+  const who = author ? b4a.toString(author, 'hex') : ''
+  return who + ':' + b4a.toString(record.blobsCoreKey, 'hex') + ':' + record.byteOffset
 }
 
 // Keys sort chronologically: an 8-byte BIG-ENDIAN capture-time prefix, then the
@@ -143,4 +207,4 @@ function writeUint64BE (buf, value, offset) {
   buf[offset + 7] = low & 0xff
 }
 
-module.exports = { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleKey, roleOf, writeUint64BE }
+module.exports = { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleKey, roleOf, epochKey, readEpoch, currentEpoch, sealedKeysFor, memberBoxKeys, writeUint64BE }

@@ -58,7 +58,9 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         // header carries {name, takenAt, embedding?}; the bytes are the payload,
         // no base64. u32 (not u16) so a large embedding can't overflow the frame.
         const buf = req.data
-        const headerLen = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24)
+        // `>>> 0` forces an unsigned read: without it `<< 24` makes the top bit
+        // sign-extend, so a large header length would decode negative.
+        const headerLen = (buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24)) >>> 0
         const meta = JSON.parse(b4a.toString(buf.subarray(4, 4 + headerLen)))
         // The app may attach a base64 embedding (computed on-device via TFLite);
         // store it as raw float32 bytes.
@@ -130,14 +132,20 @@ async function main () {
   const os = require('bare-os')
   const path = require('bare-path')
   const fs = require('bare-fs')
-  const { loadOrCreateSeed, primaryKeyFromSeed } = require('./identity')
+  const { loadOrCreateSeed, primaryKeyFromSeed, encryptionKeyFromSeed } = require('./identity')
+  const { memberBoxKeyFromSeed } = require('./rotation')
 
   const base = Bare.argv[0] || os.tmpdir()
   // The device identity seed — minted once, persisted, the root every core
-  // descends from. (A later chapter backs it up as a mnemonic and moves it into
+  // descends from. It seeds both the device's keys (primaryKey) and the album's
+  // encryption key. (A later chapter backs it up as a mnemonic and moves it into
   // the platform keychain; here it lives beside the vault.)
   const seed = loadOrCreateSeed(fs, path.join(base, 'shoebox-seed'))
-  vault = new Vault(path.join(base, 'shoebox-vault'), { primaryKey: primaryKeyFromSeed(seed) })
+  vault = new Vault(path.join(base, 'shoebox-vault'), {
+    primaryKey: primaryKeyFromSeed(seed),
+    encryptionKey: encryptionKeyFromSeed(seed),
+    boxKeyPair: memberBoxKeyFromSeed(seed), // opens content keys sealed to us on rotation (Ch7 M3)
+  })
   await vault.ready()
 }
 

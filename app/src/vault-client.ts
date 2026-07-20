@@ -12,8 +12,9 @@ export interface ImportResult {
 }
 
 // bare-rpc encodes the command as a uint — integers, not strings. Mirrors the
-// worker's CMD map exactly (worker/index.js).
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10 }
+// worker's CMD map exactly (worker/index.js). ERROR is a worker→app EVENT (the
+// worker emits it if boot fails), not a request.
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10 }
 // A worklet that never replies (e.g. a boot hang) must not leave a promise
 // pending forever — every request is raced against this deadline.
 const RPC_TIMEOUT_MS = 20000
@@ -51,10 +52,16 @@ export function hamming(a: string, b: string): number {
 export class VaultClient {
   private rpc: any
 
-  constructor(ipc: unknown) {
-    // onrequest is optional at runtime (defaults to noop); cast around the
-    // untyped CJS default-export's inferred arity.
-    this.rpc = new (RPC as any)(ipc)
+  constructor(ipc: unknown, onError?: (message: string) => void) {
+    // The worker emits an ERROR event if boot fails; without a handler it's
+    // silently dropped and the UI keeps showing a stale "vault ready". Route it
+    // to onError so the app can surface a failed/dead worker instead of a zombie.
+    this.rpc = new (RPC as any)(ipc, (req: { command: number; data: Uint8Array }) => {
+      if (req.command !== CMD.ERROR || !onError) return
+      let message = 'worker reported an error'
+      try { message = JSON.parse(b4a.toString(req.data)).message || message } catch { /* keep default */ }
+      onError(message)
+    })
   }
 
   // Race a reply against a deadline so a non-replying worklet can't hang forever.

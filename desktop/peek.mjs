@@ -3,7 +3,12 @@
 // the whole library — every writer's log, the linearized view, and the blob
 // cores. It runs the SAME apply()/open() as the phone (imported from the worker),
 // so its view converges byte for byte. Read-only: it never addWriter's itself.
-// Usage: node peek.mjs <library-key> [out.jpg]
+//
+// Ch7 note: the album is ENCRYPTED. Without the album key this peer still
+// replicates every block — but as ciphertext, so its view stays EMPTY. That is
+// the point of the chapter: the album is private to key-holders. Pass the album
+// key (64-hex) to actually read it.
+// Usage: node peek.mjs <library-key> [album-key-hex] [out.jpg]
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Autobase from 'autobase'
@@ -20,20 +25,30 @@ const require = createRequire(import.meta.url)
 const { commandEncoding, openView, apply } = require('../worker/library')
 
 const key = decode(process.argv[2]) // the LIBRARY key (base.key), not a core key
-const out = process.argv[3] ?? path.join(os.tmpdir(), 'shoebox-peek.jpg')
+// A 64-hex album key decrypts the view + blobs; anything else is treated as the
+// output path (so `peek <key> out.jpg` still works for an UNENCRYPTED library).
+const maybeKey = process.argv[3]
+const isAlbumKey = maybeKey && /^[0-9a-fA-F]{64}$/.test(maybeKey)
+const encryptionKey = isAlbumKey ? Buffer.from(maybeKey, 'hex') : null
+const out = (isAlbumKey ? process.argv[4] : process.argv[3]) ?? path.join(os.tmpdir(), 'shoebox-peek.jpg')
 
 const store = new Corestore(path.join(os.tmpdir(), 'shoebox-peek-store'))
 const swarm = new Hyperswarm()
 
-const base = new Autobase(store, key, { open: openView, apply, valueEncoding: commandEncoding })
+const base = new Autobase(store, key, {
+  open: openView, apply, valueEncoding: commandEncoding,
+  ...(encryptionKey ? { encryptionKey } : {}), // decrypt the album (Ch7)
+})
 await base.ready()
 
 // base.replicate attaches the wakeup protocol (store.replicate alone would never
 // learn which writers advanced). Join as a client — we consume, we don't announce.
-swarm.on('connection', (conn) => base.replicate(conn))
+swarm.on('connection', (conn) => { conn.on('error', () => {}); base.replicate(conn) })
 swarm.join(base.discoveryKey, { client: true, server: false })
 
-console.log('looking for your library on the swarm…')
+console.log(encryptionKey
+  ? 'looking for your library on the swarm (with the album key)…'
+  : 'looking for your library on the swarm (no album key — an encrypted album will read EMPTY)…')
 
 // Sync the log and rebuild the view. base.update() fetches what's AVAILABLE, so
 // we loop — each pass gives replication a real event-loop turn to deliver blocks.
@@ -47,12 +62,16 @@ while (Date.now() < deadline) {
 }
 
 if (!node) {
-  console.error('found no photos — is a device online and sharing the library?')
+  console.error(encryptionKey
+    ? 'found no photos — is a device online and sharing the library?'
+    : 'found no photos — the album is likely ENCRYPTED. Re-run with the album key: node peek.mjs <library-key> <album-key-hex>. (Or no device is online.)')
   process.exit(1)
 }
 
 const record = node.value
-const blobs = new Hyperblobs(store.get({ key: record.blobsCoreKey })) // whichever device authored it
+const blobs = new Hyperblobs(store.get(encryptionKey
+  ? { key: record.blobsCoreKey, encryptionKey }
+  : { key: record.blobsCoreKey })) // whichever device authored it
 const photo = await blobs.get({
   blockOffset: record.blockOffset,
   blockLength: record.blockLength,

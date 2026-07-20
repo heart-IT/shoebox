@@ -17,6 +17,13 @@ time, 2026-07-10.
 | hypercore-id-encoding | 1.3.0 | |
 | framed-stream | 1.0.1 | frames the unframed worklet IPC (rn-bare-kit#10) |
 | bare-pack | 2.2.0 | bundle must cover ios, ios-simulator, android, android-arm |
+| autobase | 7.28.1 | Ch5+: multi-writer view engine; `apply(nodes, view, host)`, `host.system.has()` is true for REMOVED writers (see audit fix F1) |
+| blind-pairing | 2.3.1 | Ch5+: invite/candidate flow. `createInvite` `expires` field is NOT enforced in this version — single-use is the app's job (audit fix P2) |
+| hyperbee | 2.27.3 | Ch3+: the `photos` and (Ch6) `roles` view bees |
+| hyperschema | 1.21.0 | Ch3+: record codegen; >7 optional fields switch flags to variable-width (no cliff — audit fix F4) |
+| hypercore-crypto | 3.7.0 | Ch5+: seed → primaryKey / album key derivation |
+| z32 | 1.1.0 | Ch5+: z-base-32 for variable-length invites |
+| bare-media | 2.10.0 | Ch3+: worker thumbnail decode/resize (Bare-only) |
 
 ## Drift findings (validated against installed source)
 
@@ -330,3 +337,95 @@ symmetric-NAT relay — deferred as deployment choices, not code bugs):
 - **Verified correct by the audit (unchanged):** the C++ mmap module (all error
   paths), the native build wiring, the P2P replication/discovery/verification
   layer, and the 64-bit/dHash/Hamming arithmetic.
+
+## Ch05–Ch07 (structural) + four-dimension audit fixes (2026-07-20)
+
+Ch05 swapped the single-writer index for an **Autobase** (shared `apply()` in
+`worker/library.js`); Ch06 added the **roles** view (owner/member, owner-only
+membership, forward-only revocation); Ch07 (in progress, untagged) **encrypts**
+the album and delivers the key through pairing. See the README chapter table.
+
+A four-dimension audit (correctness / completeness / P2P / production) followed.
+Fixes landed and covered by `worker/test/smoke.mjs` (all Node-verifiable):
+
+- **F1 (HIGH, correctness):** re-inviting a **revoked** writer silently failed —
+  the `ADD_WRITER` gate skipped `host.addWriter` whenever `host.system.has(key)`
+  was true, but that stays true for *removed* writers, leaving a phantom member
+  (role set, never writable). Gate re-admission on our own `roles` view instead.
+  Reproduced before/after; smoke: `re-invite-after-revoke`.
+- **P1 (HIGH, P2P):** `createInvite` handed back the album key with **no owner
+  check** — apply() gates *writes* to owners, but the key travels back *outside*
+  apply(), so any device could leak read access. `createInvite`/`removeMember`
+  now gate on `isOwner()`. Smoke: `owner-only invite/remove`.
+- **P2 / M1 (HIGH/MED, P2P):** invites were permanent, unlimited-use, and never
+  torn down (blind-pairing does NOT enforce `expires`, and has no one-shot). Now
+  **single-use** (first valid candidate only; the rest denied) and re-issuing an
+  invite closes the prior member so invites can rotate. Smoke: `single-use invite`.
+- **F2 (MED, correctness):** the photo count went stale after a *remote* import —
+  it was invalidated only by local imports. Now invalidated on any `base.on('update')`.
+- **F3 (MED, correctness):** a member could shadow another's record by reusing its
+  `blobsCoreKey`+`byteOffset`. The photo key now binds to the **authoring writer**
+  (`node.from.key`, autobase-attested), so a forgery keys under its own identity.
+- **F5/F6/F7 (LOW):** `IMPORT_RAW` header length reads unsigned (`>>> 0`);
+  `removeMember` fails loudly from a non-owner instead of reporting a phantom
+  success; swarm connections get a noop `error` listener; `maxPeers: 64` bounds fan-out.
+- **F4 (doc, was wrong):** the "8th-optional-field flag-byte cliff" does not exist
+  — the codegen switches to variable-width flags at field 8 (verified n=8/9
+  round-trip). Corrected in `build-schema.mjs` and the README.
+- **X1 / peek (HIGH, completeness):** Ch7 encryption silently broke `peek.mjs` —
+  it now accepts an album key (`node peek.mjs <library-key> <album-key-hex>`) and
+  explains the keyless/blind case; false README/App copy corrected.
+- **Docs/tests:** README gained ch06/ch07 rows and the join.mjs Layout entry;
+  undeclared direct deps declared (`z32`, `hypercore-crypto`; `hyperdht` devDep;
+  desktop `z32`); the jest preset fixed (`@react-native/jest-preset` installed) and
+  the assertion-free template test replaced with real `Meter` unit coverage (2 pass).
+
+### Still open (device- or feature-gated — NOT fixed here)
+
+- **C2 (Android store):** 16KB page-size compliance unverified (TFLite 2.14.0,
+  targetSdk 36) — needs a release-APK `zipalign -c -P 16` check.
+- **R1 (mobile lifecycle):** bare-kit's native AppState listener may suspend the
+  worklet before the app's `SUSPEND` RPC runs, so the swarm/blob-server sockets may
+  not close on background (see the bare-kit 0.15 auto-suspend drift note above).
+  Needs on-device confirmation.
+- **X2 (completeness):** a phone still can't join as a second device (the Vault
+  `bootstrap` path works under Node, but there's no JOIN RPC, UI, or delivered-key
+  persistence). A dedicated milestone.
+- **H5 (production):** the 2.76 MB worker bundle is inlined as a Hermes string;
+  shipping it as an async-read asset is a device-tested refactor.
+
+## Ch07 M3 — content-key rotation on revocation (2026-07-20)
+
+Closes the audit's P3/H2: a kicked member no longer reads new content. The album
+key stays MEMBERSHIP (never rotates — you can't un-replicate a log). A separate
+**content key** encrypts each photo's browsable content and rotates on every kick.
+
+- **Two-tier keys.** `worker/rotation.js`: a seed-derived X25519 **box keypair**
+  per device (a sibling of primaryKey/album-key derivations); `crypto_box_seal` to
+  wrap a content key for one member; `crypto_secretbox` for the content itself.
+  Epoch 0's content key IS the album key (every member has it via pairing); each
+  later epoch is a fresh random key.
+- **Rotation.** `removeMember` on an encrypted album appends `REMOVE_WRITER` then
+  `ROTATE_KEY` — a new epoch's content key sealed once per REMAINING member (by
+  writer key → box key from the `members` view bee) and carried in the log. The
+  removed member has no sealed copy. `rotations` (view bee) holds the sealed keys;
+  each device unseals the one addressed to it (`_syncContentKeys`).
+- **What's sealed.** The thumbnail (content-encrypted in the record; reads back
+  `''` without the key) and the bytes (each epoch's photos live in their own blob
+  core keyed at the hypercore layer by that epoch's content key; the blob-server
+  `resolve` hook hands back the per-core key). A revoked member decrypts the album
+  metadata but not the pixels of post-kick photos.
+- **Schema.** `photo` gains an optional `epoch` uint — the **7th** optional field,
+  still inside the codec's one-byte flag fast path (this is the F4 correction made
+  concrete). Old (v1, no-epoch) records decode as epoch 0.
+- **Inv-9 (new):** *revocation rotates the future, not the past.* A kicked member
+  keeps every content key it legitimately held; it is only sealed OUT of the keys
+  minted after its kick. Forward-only, the encryption analogue of Inv-8.
+- Smoke: founder + two members; kick one; the remaining member unseals the new key
+  and reads the post-rotation photo, the kicked member reads it redacted (`''`) and
+  never receives the key, and keeps its pre-kick content. `content-key rotation on
+  revoke` in the suite. Stable across repeated runs.
+- **Honest boundary:** a still-connected kicked member sees that new photos EXIST
+  (name, time — the metadata skeleton in the album-encrypted view); rotation
+  redacts the CONTENT (thumbnail + bytes), not the existence. App UI + blob-server
+  streaming of originals under rotated keys is device-verified follow-on.

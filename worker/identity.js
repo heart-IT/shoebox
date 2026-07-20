@@ -18,6 +18,17 @@ function primaryKeyFromSeed (seed) {
   return crypto.hash(b4a.concat([NS, seed]))
 }
 
+const NS_ENC = b4a.from('shoebox:album-enc:v1')
+
+// The album's 32-byte ENCRYPTION key, derived from the founder's seed. The log,
+// the views, and the photo bytes are all encrypted with it; only peers who hold
+// it can read. Members receive it through pairing — they can't derive it, it's
+// the founder's secret. Re-deriving from the seed reopens the vault. A DIFFERENT
+// namespace than the primary key so the two never coincide.
+function encryptionKeyFromSeed (seed) {
+  return crypto.hash(b4a.concat([NS_ENC, seed]))
+}
+
 // Read the device seed, or mint one on first boot. `fs` is injected (bare-fs on
 // the phone, node:fs in tests) so this stays host-agnostic like the rest of the
 // worker core.
@@ -31,4 +42,4 @@ function loadOrCreateSeed (fs, seedPath) {
   return seed
 }
 
-module.exports = { primaryKeyFromSeed, loadOrCreateSeed }
+module.exports = { primaryKeyFromSeed, encryptionKeyFromSeed, loadOrCreateSeed }

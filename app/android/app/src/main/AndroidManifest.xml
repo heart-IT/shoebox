@@ -2,6 +2,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Android 14+ (API 34): "Select photos" grants partial access via this
+         permission instead of READ_MEDIA_IMAGES; without it, a partial grant reads
+         as a denial and locks the user out of import. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <!-- pre-13 devices (minSdk 29-32) use the legacy storage permission -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
