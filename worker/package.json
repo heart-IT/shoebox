@@ -8,12 +8,15 @@
     "test": "node test/smoke.mjs"
   },
   "dependencies": {
+    "autobase": "^7.28.1",
     "b4a": "^1.8.1",
+    "bare-fs": "^4.7.4",
     "bare-image-resample": "^1.0.2",
     "bare-media": "^2.10.0",
     "bare-os": "^3.0.0",
     "bare-path": "^3.0.0",
     "bare-rpc": "^1.3.8",
+    "blind-pairing": "^2.3.1",
     "compact-encoding": "^3.3.0",
     "corestore": "^7.11.0",
     "hyperbee": "^2.27.3",

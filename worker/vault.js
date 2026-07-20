@@ -1,46 +1,21 @@
 // Host-agnostic vault core. Runs unchanged under Bare (worklet) and Node (tests,
-// desktop mirror). Platform modules are injected or lazily required — never
-// required at top level (Bare.* globals only exist at runtime).
+// desktop mirror). Ch5: the index is an AUTOBASE — each device appends to its own
+// log and a deterministic apply() (in ./library) linearizes every writer's
+// commands into one shared Hyperbee view. Photo BYTES never enter the log: they
+// stay in a per-device Hyperblobs core and the view holds only a pointer (Inv-1).
+// The library's durable identity is the Autobase bootstrap key, stable as devices
+// come and go — not any one core key.
 
 const Corestore = require('corestore')
-const Hyperbee = require('hyperbee')
 const Hyperblobs = require('hyperblobs')
+const Autobase = require('autobase')
 const BlobServer = require('hypercore-blob-server')
 const Hyperswarm = require('hyperswarm')
+const BlindPairing = require('blind-pairing')
 const idEncoding = require('hypercore-id-encoding')
+const z32 = require('z32') // invites are variable-length, not 32-byte keys
 const b4a = require('b4a')
-const { resolveStruct } = require('./spec')
-
-// The record wire format is the generated Hyperschema struct (compact-encoding).
-const photoEncoding = resolveStruct('@shoebox/photo', 1)
-
-// Keys sort chronologically because the capture time is an 8-byte BIG-ENDIAN
-// prefix, so a newest-first read is a bounded reverse scan of the tree. The name
-// and a per-blob disambiguator follow: the disambiguator is the blob's byte
-// offset in the blobs core, which is UNIQUE per write (hyperblobs serializes
-// puts), so two different photos with the same capture-ms and filename can never
-// collide onto one key and silently overwrite each other.
-function photoKey (takenAt, name, disambiguator) {
-  const tail = name + '\x00' + disambiguator // null-separated so name can't bleed into it
-  const key = b4a.alloc(8 + b4a.byteLength(tail))
-  writeUint64BE(key, Math.max(0, takenAt), 0) // clamp: a pre-1970 date must not sort as newest
-  b4a.write(key, tail, 8)
-  return key
-}
-
-function writeUint64BE (buf, value, offset) {
-  // JS numbers are safe to 2^53; split into two 32-bit halves.
-  const high = Math.floor(value / 0x100000000)
-  const low = value >>> 0
-  buf[offset] = (high >>> 24) & 0xff
-  buf[offset + 1] = (high >>> 16) & 0xff
-  buf[offset + 2] = (high >>> 8) & 0xff
-  buf[offset + 3] = high & 0xff
-  buf[offset + 4] = (low >>> 24) & 0xff
-  buf[offset + 5] = (low >>> 16) & 0xff
-  buf[offset + 6] = (low >>> 8) & 0xff
-  buf[offset + 7] = low & 0xff
-}
+const { CMD, commandEncoding, openView, apply, photoKey, disambiguator, writeUint64BE } = require('./library')
 
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', heic: 'image/heic', webp: 'image/webp', gif: 'image/gif' }
 function mimeFor (name) {
@@ -49,44 +24,67 @@ function mimeFor (name) {
 }
 
 class Vault {
-  constructor (storagePath) {
-    this.store = new Corestore(storagePath)
-    // Two cores, per Inv-1: bytes live in the blobs core; the index is a
-    // Hyperbee (B-tree over a core) keyed by capture-time. New core name
-    // ('photo-bee') because Ch3 changes the index format incompatibly — the old
-    // 'photo-index' Hypercore append-log is abandoned, not migrated in place
-    // (opening a Hyperbee over log blocks decodes them as garbage).
-    this.indexCore = this.store.get({ name: 'photo-bee' })
+  // `bootstrap` (a library key, z-base-32) joins an EXISTING library as a second
+  // device (Ch5 M3); null founds a new one (this device becomes the first writer).
+  constructor (storagePath, { bootstrap = null, primaryKey = null } = {}) {
+    // A seed-derived primaryKey makes every core — including this device's
+    // Autobase writer key — a pure function of the device seed, so it's
+    // recoverable. `unsafe: true` acknowledges we manage the key deliberately
+    // (one seed per device); without a primaryKey, Corestore mints a random one.
+    this.store = primaryKey
+      ? new Corestore(storagePath, { primaryKey, unsafe: true })
+      : new Corestore(storagePath)
+    this.bootstrap = bootstrap ? idEncoding.decode(bootstrap) : null
+    // Bytes live in a per-device Hyperblobs core; the index is the Autobase view.
     this.blobsCore = this.store.get({ name: 'photo-blobs' })
-    this.bee = null
+    this.base = null
     this.blobs = null
     this.server = null
     this.swarm = null
+    this.pairing = null // BlindPairing instance (invite flow), created on demand
+    this.member = null // the active invite member
     this._count = null // computed lazily by ensureCount()
     this._counting = null // in-flight count scan, memoized so callers share it
   }
 
   async ready () {
-    await this.indexCore.ready()
+    // The Autobase whose view is the capture-time Hyperbee. apply/open live in
+    // ./library so this device and the desktop peer run identical code.
+    this.base = new Autobase(this.store, this.bootstrap, {
+      open: openView,
+      apply,
+      valueEncoding: commandEncoding,
+      ackInterval: 1000 // auto-ack so a lone writer's imports get indexed
+    })
+    await this.base.ready()
     await this.blobsCore.ready()
-    this.bee = new Hyperbee(this.indexCore, { keyEncoding: 'binary', valueEncoding: photoEncoding })
     this.blobs = new Hyperblobs(this.blobsCore)
 
     this.server = new BlobServer(this.store)
     await this.server.listen()
   }
 
-  // Entry count. Computed lazily from the tree on first use (a fresh scan can
-  // stall a boot), then kept in sync on import.
+  // The linearized index every peer converges to.
+  get view () { return this.base.view }
+
+  // The library's durable identity — stable across devices coming and going.
+  get libraryKey () { return this.base.key }
+
+  // THIS device's identity — its own Autobase writer key, distinct from the
+  // library key. Derived from the device seed, so it's stable and recoverable.
+  // In M3 the second device ships this up during pairing to be added as a writer.
+  get deviceKey () { return this.base.local.key }
+
+  // Entry count over the view. Computed lazily (a fresh scan can stall a boot),
+  // memoized so a boot STAT racing an import shares one snapshot, invalidated on
+  // import so the next read reflects the new command.
   async ensureCount () {
     if (this._count !== null) return this._count
-    // Memoize the scan: a boot-time STAT racing an import must share ONE snapshot
-    // rather than each starting its own. importPhoto awaits this before its put,
-    // so no import can slip into the snapshot window and lose its increment.
     if (!this._counting) {
       this._counting = (async () => {
+        await this.base.update()
         let n = 0
-        for await (const _ of this.bee.createReadStream()) n++ // eslint-disable-line no-unused-vars
+        for await (const _ of this.view.createReadStream()) n++ // eslint-disable-line no-unused-vars
         this._count = n
         return n
       })()
@@ -94,16 +92,48 @@ class Vault {
     return this._counting
   }
 
-  // Announce the index core so a remote peer (the peek script) can replicate.
-  // Announcing is best-effort: swarm.flush() rejects when the DHT is unreachable
-  // (offline), which must NEVER fail a locally-successful import — the whole
-  // point is local-first. The announce is queued and propagates once online.
+  // Announce the library so other devices (and the desktop peer) can replicate.
+  // server+client now: a second device is a peer, not a read-only mirror. The
+  // whole Corestore replicates over the connection, so every writer's input core,
+  // the view, and every blob core travel together. flush() is best-effort — an
+  // offline announce must NEVER fail a locally-successful import (local-first).
   async share () {
     if (this.swarm) return
     this.swarm = new Hyperswarm()
-    this.swarm.on('connection', (conn) => this.store.replicate(conn))
-    this.swarm.join(this.indexCore.discoveryKey, { server: true, client: false })
+    // base.replicate = store.replicate (all cores: writer logs, view, blobs) PLUS
+    // the wakeup protocol — the hint layer that tells peers which writers advanced.
+    // Plain store.replicate omits wakeup, so a joiner never learns to fetch.
+    this.swarm.on('connection', (conn) => this.base.replicate(conn))
+    this.swarm.join(this.base.discoveryKey, { server: true, client: true })
     await this.swarm.flush().catch(() => {})
+  }
+
+  // Create a single invite a second device can pair with. It multiplexes the
+  // blind-pairing protocol over our EXISTING swarm — the candidate proves it holds
+  // the invite, ships its writer key up as userData, and we authorize it by
+  // appending ADD_WRITER (apply() then calls host.addWriter). The library key
+  // travels back so the candidate can bootstrap its own Autobase on the same base.
+  async createInvite () {
+    if (!this.swarm) await this.share()
+    if (!this.pairing) this.pairing = new BlindPairing(this.swarm)
+    // A fresh invite closes any previous one, so invites can be rotated.
+    if (this.member) { await this.member.close().catch(() => {}); this.member = null }
+    const { invite, publicKey, discoveryKey } = BlindPairing.createInvite(this.base.key)
+    let used = false
+    this.member = this.pairing.addMember({
+      discoveryKey,
+      onadd: async (req) => {
+        const writerKey = req.open(publicKey) // the candidate's 32-byte writer key
+        // SINGLE-USE: only the first valid candidate is admitted; deny the rest, so a
+        // leaked invite is not a standing credential.
+        if (used || !writerKey || writerKey.byteLength !== 32) return req.deny()
+        used = true
+        await this.base.append({ type: CMD.ADD_WRITER, writerKey })
+        req.confirm({ key: this.base.key }) // unencrypted library → hand back just the key
+      }
+    })
+    await this.member.flushed() // announce before the code is shared
+    return z32.encode(invite) // z-base-32 of the ~66-byte invite (NOT a 32-byte key)
   }
 
   async importPhoto (buffer, meta = {}) {
@@ -111,11 +141,9 @@ class Vault {
     // put, so the per-blob disambiguator would degenerate and two empty imports
     // with the same time+name could collide onto one key.
     if (!buffer || buffer.byteLength === 0) throw new Error('refusing to import an empty (0-byte) photo')
-    // Materialize the count before writing so the one-time scan can't race this
-    // put into its snapshot and drop the increment.
-    await this.ensureCount()
     const name = meta.name || 'photo'
     const takenAt = meta.takenAt || Date.now()
+    // Phase 1: bytes into THIS device's blobs core (never into the command log).
     const id = await this.blobs.put(buffer)
     const record = {
       name,
@@ -134,32 +162,33 @@ class Vault {
       dhash: meta.dhash || '',
       embedding: meta.embedding || null,
     }
-    // byteOffset is unique per non-empty put, so the key is unique — no
-    // get-then-put, no overwrite, no orphaned blob. The count was materialized
-    // above, so the bump is always live (JS handlers are single-threaded, so it
-    // can't interleave).
-    const key = photoKey(takenAt, name, id.byteOffset)
-    await this.bee.put(key, record)
-    this._count++
+    // Phase 2: append a pointer command; apply() linearizes it into the view.
+    await this.base.append({ type: CMD.IMPORT_PHOTO, photo: record })
+    await this.base.update() // materialize our own command into the local view
+    this._count = null // invalidate; recompute lazily from the view
+    this._counting = null
+    const key = photoKey(takenAt, name, disambiguator(record))
     return {
       link: this.link(record),
-      indexKey: idEncoding.encode(this.indexCore.key),
+      indexKey: idEncoding.encode(this.base.key), // the LIBRARY key (bootstrap)
       takenAt,
       id: b4a.toString(key, 'hex'),
     }
   }
 
-  // A time-ordered window over the index. reverse => newest first (the grid).
+  // A time-ordered window over the view. reverse => newest first (the grid).
   async list ({ limit = 100, reverse = true } = {}) {
+    await this.base.update()
     const out = []
-    for await (const { key, value } of this.bee.createReadStream({ reverse, limit })) {
+    for await (const { key, value } of this.view.createReadStream({ reverse, limit })) {
       out.push(this.decorate(value, key))
     }
     return out
   }
 
   async latest () {
-    const node = await this.bee.peek({ reverse: true })
+    await this.base.update()
+    const node = await this.view.peek({ reverse: true })
     return node ? this.decorate(node.value, node.key) : null
   }
 
@@ -176,6 +205,8 @@ class Vault {
       byteOffset: record.byteOffset,
       byteLength: record.blobByteLength,
     }
+    // getLink resolves ANY core in the store by key — so a photo authored on
+    // another device is served the moment its blob core has replicated in.
     return this.server.getLink(record.blobsCoreKey, { blob: id, type: record.mime })
   }
 
@@ -187,20 +218,24 @@ class Vault {
   // swarm — otherwise its localhost TCP socket stays bound the whole time the
   // app is backgrounded.
   async suspend () {
+    if (this.pairing) await this.pairing.suspend()
     if (this.swarm) await this.swarm.suspend()
     if (this.server) await this.server.suspend()
   }
 
   async resume () {
-    if (this.swarm) await this.swarm.resume()
     if (this.server) await this.server.resume()
+    if (this.swarm) await this.swarm.resume()
+    if (this.pairing) await this.pairing.resume()
   }
 
   async close () {
     // Reverse dependency order, each guarded so one failure can't strand the
-    // rest. The blob-server owns the store we handed it and closes it in its own
-    // _close(), so we don't double-close the store when the server exists.
+    // rest: pairing → swarm → autobase (releases its core sessions) → blob-server,
+    // which owns the store we handed it and closes it in its own _close().
+    if (this.pairing) await this.pairing.close().catch(() => {})
     if (this.swarm) await this.swarm.destroy().catch(() => {})
+    if (this.base) await this.base.close().catch(() => {})
     if (this.server) await this.server.close().catch(() => {})
     else await this.store.close().catch(() => {})
   }

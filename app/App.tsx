@@ -36,6 +36,7 @@ export default function App() {
   const [reading, setReading] = useState<Reading | null>(null)
   const [readingLabel, setReadingLabel] = useState('')
   const [showGrid, setShowGrid] = useState(false)
+  const [invite, setInvite] = useState<string | null>(null)
   const clientRef = useRef<VaultClient | null>(null)
 
   useEffect(() => {
@@ -87,6 +88,19 @@ export default function App() {
       setStatus('stored — no server involved')
     } catch (e) {
       setStatus(`import failed: ${String(e)}`)
+    }
+  }
+
+  // Invite a second device to join as a WRITER. The code is one-time; the laptop
+  // runs `node join.mjs <invite>` and, once added, can import into this library.
+  const inviteDevice = async () => {
+    setStatus('creating invite…')
+    try {
+      const res = await clientRef.current!.createInvite()
+      setInvite(res.invite)
+      setStatus('invite ready — pair a laptop with join.mjs')
+    } catch (e) {
+      setStatus(`invite failed: ${String(e)}`)
     }
   }
 
@@ -187,6 +201,7 @@ export default function App() {
 
         <Button title="Show grid" onPress={() => setShowGrid(true)} />
         <Button title="Import one photo" onPress={importOne} />
+        <Button title="Invite a device" onPress={inviteDevice} />
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
         <Button title={`Import + embed ${BATCH}`} onPress={importRollZeroCopy} />
@@ -228,6 +243,15 @@ export default function App() {
             <Text style={styles.keyLabel}>On a laptop: node peek.mjs {'↓'}</Text>
             <Text style={styles.key} selectable>
               {indexKey}
+            </Text>
+          </View>
+        )}
+
+        {invite && (
+          <View style={styles.keyBox}>
+            <Text style={styles.keyLabel}>Pair a device: node join.mjs {'↓'}</Text>
+            <Text style={styles.key} selectable>
+              {invite}
             </Text>
           </View>
         )}

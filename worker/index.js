@@ -26,7 +26,7 @@ async function withThumb (bytes, meta) {
 
 // bare-rpc encodes the command as a uint on the wire — commands are integers,
 // not strings. This map is the wire contract; the app mirrors it exactly.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, ERROR: 9 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, ERROR: 9 }
 
 let vault = null
 // Requests can arrive before the vault finishes opening; gate every command on
@@ -94,6 +94,11 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         await vault.resume()
         req.reply(json({ ok: true }))
         break
+      case CMD.CREATE_INVITE:
+        // Pair a second device: returns a one-time invite code the candidate runs
+        // `node join.mjs <invite>` with (it joins as a WRITER, not a read peer).
+        req.reply(json({ invite: await vault.createInvite() }))
+        break
       default:
         req.reply(json({ error: `unknown command: ${req.command}` }))
     }
@@ -115,9 +120,15 @@ async function main () {
   // stays loadable under Node for tests and the desktop mirror.
   const os = require('bare-os')
   const path = require('bare-path')
+  const fs = require('bare-fs')
+  const { loadOrCreateSeed, primaryKeyFromSeed } = require('./identity')
 
   const base = Bare.argv[0] || os.tmpdir()
-  vault = new Vault(path.join(base, 'shoebox-vault'))
+  // The device identity seed — minted once, persisted, the root every core
+  // descends from. (A later chapter backs it up as a mnemonic and moves it into
+  // the platform keychain; here it lives beside the vault.)
+  const seed = loadOrCreateSeed(fs, path.join(base, 'shoebox-seed'))
+  vault = new Vault(path.join(base, 'shoebox-vault'), { primaryKey: primaryKeyFromSeed(seed) })
   await vault.ready()
 }
 

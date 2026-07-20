@@ -13,7 +13,7 @@ export interface ImportResult {
 
 // bare-rpc encodes the command as a uint — integers, not strings. Mirrors the
 // worker's CMD map exactly (worker/index.js).
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7 }
 // A worklet that never replies (e.g. a boot hang) must not leave a promise
 // pending forever — every request is raced against this deadline.
 const RPC_TIMEOUT_MS = 20000
@@ -119,5 +119,11 @@ export class VaultClient {
 
   resume(): Promise<{ ok: boolean }> {
     return this.call(CMD.RESUME)
+  }
+
+  // Pair a second device — returns a one-time invite code to run `node join.mjs
+  // <invite>` with on a laptop. That device joins as a writer, not a read peer.
+  createInvite(): Promise<{ invite: string }> {
+    return this.call(CMD.CREATE_INVITE)
   }
 }
