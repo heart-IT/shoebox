@@ -34,9 +34,11 @@ target_sources(
   ../nitrogen/generated/android/ShoeboxOnLoad.cpp
   # Shared Nitrogen C++ sources
   ../nitrogen/generated/shared/c++/HybridShoeboxBytesSpec.cpp
+  ../nitrogen/generated/shared/c++/HybridShoeboxEmbedSpec.cpp
   ../nitrogen/generated/shared/c++/HybridShoeboxPathsSpec.cpp
   ../nitrogen/generated/shared/c++/HybridShoeboxRollSpec.cpp
   # Android-specific Nitrogen C++ sources
+  ../nitrogen/generated/android/c++/JHybridShoeboxEmbedSpec.cpp
   ../nitrogen/generated/android/c++/JHybridShoeboxPathsSpec.cpp
   ../nitrogen/generated/android/c++/JHybridShoeboxRollSpec.cpp
 )

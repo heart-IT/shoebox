@@ -251,3 +251,82 @@ that Movement 3's C++ wrote by hand.
 - Verified on device: 30 real camera-roll photos import with worker-generated
   thumbnails; the grid renders them newest-first (windowed/recycled); tapping a
   cell opens the full-resolution original. peek.mjs regression still passes.
+
+## Ch04 Movement 1 — on-device perceptual hash (dHash) near-duplicates
+
+- **Inv-5 demonstrated:** the image is decoded and reasoned about ON THE DEVICE;
+  only a 64-bit result enters the index. `worker/thumbnail.js` (now `analyze`)
+  reuses the single bare-media decode to also compute a dHash — shrink to 9×8,
+  grayscale, compare each pixel to its right neighbour → 16-hex. Stored as an
+  optional index column (Inv-4 holds).
+- **Near-duplicate search runs over the INDEX, not pixels:** Hamming distance
+  between dHashes, computed app-side in `Grid.tsx` (`hamming()` in vault-client).
+  Nothing leaves the phone — the point Part 5 builds on (sync the index, search
+  works everywhere without re-running inference).
+- **Bug found:** the vault record object never copied `meta.dhash` into the
+  stored record (only `thumb`/`orientation` were), so dHash read back as empty.
+  Verified on device once fixed: distinct photos hash 16–22 bits apart
+  (discriminating), identical images 0; the grid modal shows a photo's
+  near-duplicates (threshold ≤12) plus a `dhash · closest N` readout.
+- **dHash resize** uses bare-image-resample directly for an exact 9×8 (bare-media's
+  `resize` only max-fits); the step is wrapped so a failure can't cost the thumb.
+
+## Ch04 Movements 2 & 3 — on-device embedding model + semantic search
+
+- **M2 embedding model (Nitro + TFLite + NNAPI):** `org.tensorflow:tensorflow-lite:2.14.0`
+  (app Gradle dep), `mobilenet_v1_1.0_224_quant.tflite` (~4.3 MB) bundled as an
+  asset (`noCompress 'tflite'`). A Kotlin Nitro HybridObject `ShoeboxEmbed.embed(path)`
+  decodes with BitmapFactory → 224×224 → runs the TFLite Interpreter with an
+  `NnApiDelegate` → dequantizes the 1001-way output as a scene-embedding vector.
+  Verified on device: logcat shows "Created TensorFlow Lite delegate for NNAPI"
+  and "Replacing 31 of 31 node(s) with delegate" — the WHOLE graph runs on the
+  neural HW. Embeddings are packed float32→base64 and stored in the index as an
+  optional column (Inv-4), computed during import (the "backfill is expensive"
+  cost → carries to the bonus part).
+- **M3 semantic search:** cosine similarity over the embedding column, computed
+  app-side in `Grid.tsx` (`cosine`/`unpackEmbedding` in `embed.ts`). Tapping a
+  photo shows "most similar (on-device model)" — verified: a chat-screenshot
+  returns other chat-screenshots, entirely offline. Near-duplicates (M1 dHash)
+  sit alongside.
+- **Honest notes:** (1) the model is a CLASSIFIER; its 1001-way distribution is
+  used as the embedding — a real on-device vector where same-content photos land
+  near each other, but not a trained metric-learning embedding. (2) Decode is
+  BitmapFactory in Kotlin, not the worker's bare-media via the Part 2 buffer
+  contract — simpler and reliable; the spec's buffer-reuse is the cleaner ideal.
+  (3) iOS `ShoeboxEmbed` is a stub (Android is the verified platform).
+
+## Post-audit hardening (3-agent audit incl. holepunch-p2p-systems skill)
+
+Fixed the audit's HIGH/MED findings (config-only LOWs — release-signing keystore,
+symmetric-NAT relay — deferred as deployment choices, not code bugs):
+
+- **Data loss (HIGH):** the Hyperbee key was `takenAt+name`; two distinct photos
+  sharing a ms+filename collided and orphaned a blob. Key now appends the blob's
+  unique `byteOffset` — distinct puts get distinct keys. This also removed the
+  get-then-put existed-check and its count race. Regression covered in smoke.
+- **TFLite leaks + jank (HIGH×3):** `HybridShoeboxEmbed` is now a process
+  singleton (Interpreter + retained NnApiDelegate + mapped model built once, not
+  per import run); the AssetFd/stream are closed after mapping; BitmapFactory
+  downsamples via `inSampleSize` and recycles both bitmaps; and `embed()` is
+  **async** (`Promise.async`, off the JS thread). Verified: import+embed stall
+  dropped to **32 ms** (was a multi-second synchronous freeze).
+- **No teardown (HIGH):** added `Bare.on('teardown')` → `vault.close()` (swarm →
+  blob-server → store, reverse order, guarded); dropped the redundant double
+  `store.close()` (the blob-server owns it).
+- **Offline import failed (HIGH):** `share()` now `.catch()`es the `swarm.flush()`
+  rejection so a locally-successful import never fails when the DHT is unreachable.
+- **MED:** boot failure now resolves `ready` + sets `bootError` (RPCs reply with an
+  error instead of hanging); `IMPORT_RAW` header length widened u16→u32 (embedding
+  can't overflow the frame); `withThumb`/dHash failures log and store empty (not
+  an `'ERR:'` sentinel that read as a Hamming-0 duplicate); RPC calls have a 20s
+  timeout; per-photo error isolation in the import loop; `requestLegacyExternalStorage`
+  + a network-security-config scoping cleartext to localhost (was process-wide).
+- **LOW:** `Grid` near-dup/cosine `useMemo`ed (was recomputed every render);
+  stable `id` (hex key) as the React/list key (was `takenAt:name`, collided);
+  removed the leftover `dhash·closest` debug line; degenerate all-zero dHashes
+  excluded from near-dup; Float32 unpack guards non-multiple-of-4 length;
+  `list()` distinguishes error from empty; negative `takenAt` clamped; stale
+  `framed-stream` dep dropped.
+- **Verified correct by the audit (unchanged):** the C++ mmap module (all error
+  paths), the native build wiring, the P2P replication/discovery/verification
+  layer, and the 64-bit/dHash/Hamming arithmetic.

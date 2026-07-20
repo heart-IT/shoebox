@@ -80,6 +80,16 @@
           "name": "thumb",
           "type": "string",
           "version": 1
+        },
+        {
+          "name": "dhash",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "embedding",
+          "type": "buffer",
+          "version": 1
         }
       ]
     }

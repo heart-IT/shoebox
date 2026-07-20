@@ -8,12 +8,15 @@ export interface ImportResult {
   link: string
   indexKey: string
   takenAt: number
-  id: string // the record's hex key — stable and unique
+  id: string
 }
 
 // bare-rpc encodes the command as a uint — integers, not strings. Mirrors the
 // worker's CMD map exactly (worker/index.js).
 const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6 }
+// A worklet that never replies (e.g. a boot hang) must not leave a promise
+// pending forever — every request is raced against this deadline.
+const RPC_TIMEOUT_MS = 20000
 
 export interface PhotoRecord {
   id: string // stable, unique — safe as a React list key
@@ -24,7 +27,21 @@ export interface PhotoRecord {
   height: number
   orientation: number
   thumb: string
+  dhash: string
+  embedding: string // base64 float32, empty until indexed
   link: string
+}
+
+// Hamming distance between two 16-hex dHashes (0 = identical). Near-duplicate
+// search runs here, over the index column — no pixels, nothing leaves the phone.
+export function hamming(a: string, b: string): number {
+  if (!a || !b || a.length !== b.length) return 64
+  let d = 0
+  for (let i = 0; i < a.length; i++) {
+    let x = (parseInt(a[i], 16) ^ parseInt(b[i], 16)) & 0xf
+    while (x) { d += x & 1; x >>= 1 }
+  }
+  return d
 }
 
 /**
@@ -40,10 +57,18 @@ export class VaultClient {
     this.rpc = new (RPC as any)(ipc)
   }
 
+  // Race a reply against a deadline so a non-replying worklet can't hang forever.
+  private withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`${what} timed out`)), RPC_TIMEOUT_MS)
+      p.then((v) => { clearTimeout(t); resolve(v) }, (e) => { clearTimeout(t); reject(e) })
+    })
+  }
+
   private async call(command: number, payload?: object): Promise<any> {
     const req = this.rpc.request(command)
     req.send(b4a.from(payload ? JSON.stringify(payload) : ''))
-    const res: Uint8Array = await req.reply()
+    const res: Uint8Array = await this.withTimeout(req.reply(), `command ${command}`)
     const out = JSON.parse(b4a.toString(res))
     if (out.error) throw new Error(out.error)
     return out
@@ -57,18 +82,24 @@ export class VaultClient {
     return this.call(CMD.IMPORT, { name, takenAt, dataBase64 })
   }
 
-  // Movement 3: raw bytes, framed as [u16 LE headerLen][header JSON][bytes]. The
-  // header carries {name, takenAt}; the bytes ride bare-rpc as-is, no base64.
-  async importRaw(meta: { name: string; takenAt: number }, bytes: Uint8Array): Promise<ImportResult> {
+  // Movement 3: raw bytes, framed as [u32 LE headerLen][header JSON][bytes]. The
+  // header carries {name, takenAt, embedding?}; the bytes ride bare-rpc as-is, no
+  // base64. u32 (not u16) so a large embedding in the header can't overflow.
+  async importRaw(
+    meta: { name: string; takenAt: number; embedding?: string },
+    bytes: Uint8Array,
+  ): Promise<ImportResult> {
     const header = b4a.from(JSON.stringify(meta))
-    const payload = new Uint8Array(2 + header.length + bytes.length)
+    const payload = new Uint8Array(4 + header.length + bytes.length)
     payload[0] = header.length & 0xff
     payload[1] = (header.length >> 8) & 0xff
-    payload.set(header, 2)
-    payload.set(bytes, 2 + header.length)
+    payload[2] = (header.length >> 16) & 0xff
+    payload[3] = (header.length >> 24) & 0xff
+    payload.set(header, 4)
+    payload.set(bytes, 4 + header.length)
     const req = this.rpc.request(CMD.IMPORT_RAW)
     req.send(payload)
-    const out = JSON.parse(b4a.toString(await req.reply()))
+    const out = JSON.parse(b4a.toString(await this.withTimeout(req.reply(), 'import')))
     if (out.error) throw new Error(out.error)
     return out
   }
@@ -76,5 +107,17 @@ export class VaultClient {
   async list(limit = 200): Promise<PhotoRecord[]> {
     const out = await this.call(CMD.LIST, { limit })
     return out.photos
+  }
+
+  // Mobile lifecycle: the host forwards OS background/foreground here so the
+  // worker can drop the swarm connection and the localhost blob-server socket
+  // while backgrounded (and reopen them on return). Without this, the worker's
+  // suspend/resume path is dead code and the sockets leak across a background.
+  suspend(): Promise<{ ok: boolean }> {
+    return this.call(CMD.SUSPEND)
+  }
+
+  resume(): Promise<{ ok: boolean }> {
+    return this.call(CMD.RESUME)
   }
 }

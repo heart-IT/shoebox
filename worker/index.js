@@ -12,11 +12,14 @@ const { Vault } = require('./vault')
 const thumbnail = require('./thumbnail')
 
 // Eager ≤256px preview per import, generated in the worker (never the renderer).
-// Unsupported/corrupt images import without a thumb rather than failing.
+// Unsupported/corrupt images import without a thumb rather than failing — but we
+// log it, because "silently thumbless forever" (the index is append-only, never
+// re-analyzed) should not be invisible.
 async function withThumb (bytes, meta) {
   try {
     return { ...meta, ...(await thumbnail(bytes)) }
-  } catch {
+  } catch (err) {
+    console.error('analyze failed for', meta.name, '-', String((err && err.message) || err))
     return meta
   }
 }
@@ -27,12 +30,15 @@ const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6,
 
 let vault = null
 // Requests can arrive before the vault finishes opening; gate every command on
-// this instead of racing readiness.
-let resolveReady
-const ready = new Promise((resolve) => { resolveReady = resolve })
+// this instead of racing readiness. If boot FAILS, `ready` still resolves and
+// `bootError` is set, so handlers reply with an error instead of hanging forever.
+let vaultReady
+let bootError = null
+const ready = new Promise((resolve) => { vaultReady = resolve })
 
 const rpc = new RPC(BareKit.IPC, async (req) => {
   await ready
+  if (bootError) return req.reply(json({ error: 'worker failed to start: ' + bootError }))
   try {
     switch (req.command) {
       case CMD.STAT:
@@ -48,12 +54,16 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         break
       }
       case CMD.IMPORT_RAW: {
-        // Movement 3 wire: [u16 LE headerLen][header JSON][photo bytes]. The
-        // header carries {name, takenAt}; the bytes are the payload, no base64.
+        // Movement 3 wire: [u32 LE headerLen][header JSON][photo bytes]. The
+        // header carries {name, takenAt, embedding?}; the bytes are the payload,
+        // no base64. u32 (not u16) so a large embedding can't overflow the frame.
         const buf = req.data
-        const headerLen = buf[0] | (buf[1] << 8)
-        const meta = JSON.parse(b4a.toString(buf.subarray(2, 2 + headerLen)))
-        const bytes = buf.subarray(2 + headerLen)
+        const headerLen = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24)
+        const meta = JSON.parse(b4a.toString(buf.subarray(4, 4 + headerLen)))
+        // The app may attach a base64 embedding (computed on-device via TFLite);
+        // store it as raw float32 bytes.
+        if (meta.embedding) meta.embedding = b4a.from(meta.embedding, 'base64')
+        const bytes = buf.subarray(4 + headerLen)
         const result = await vault.importPhoto(bytes, await withThumb(bytes, meta))
         await vault.share()
         req.reply(json(result))
@@ -66,19 +76,22 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         const { limit } = req.data && req.data.byteLength ? JSON.parse(b4a.toString(req.data)) : {}
         const records = await vault.list({ limit: limit || 200, reverse: true })
         const photos = records.map((r) => ({
+          id: r.id, // stable, unique — the app's list key
           name: r.name, takenAt: r.takenAt, mime: r.mime,
           width: r.width, height: r.height, orientation: r.orientation,
-          thumb: r.thumb, link: r.link,
+          thumb: r.thumb || '', dhash: r.dhash || '', link: r.link,
+          // float32 embedding as base64 (empty if not indexed yet).
+          embedding: r.embedding ? b4a.toString(r.embedding, 'base64') : '',
         }))
         req.reply(json({ photos }))
         break
       }
       case CMD.SUSPEND:
-        if (vault.swarm) await vault.swarm.suspend()
+        await vault.suspend()
         req.reply(json({ ok: true }))
         break
       case CMD.RESUME:
-        if (vault.swarm) await vault.swarm.resume()
+        await vault.resume()
         req.reply(json({ ok: true }))
         break
       default:
@@ -89,9 +102,12 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
   }
 })
 
-main().catch((err) => {
-  // No request to answer yet — surface boot failures as an unsolicited event.
-  rpc.event(CMD.ERROR).send(json({ message: String((err && err.stack) || err) }))
+main().then(vaultReady, (err) => {
+  // Boot failed: record it and RESOLVE ready anyway, so every pending/future
+  // command replies with an error instead of hanging on `await ready` forever.
+  bootError = String((err && err.stack) || err)
+  rpc.event(CMD.ERROR).send(json({ message: bootError }))
+  vaultReady()
 })
 
 async function main () {
@@ -103,8 +119,14 @@ async function main () {
   const base = Bare.argv[0] || os.tmpdir()
   vault = new Vault(path.join(base, 'shoebox-vault'))
   await vault.ready()
-  resolveReady()
 }
+
+// Close the vault on worklet teardown so the swarm, the blob-server socket, and
+// Corestore shut down cleanly (otherwise every teardown leaks sockets and leaves
+// the store closed uncleanly — a stuck-lock risk on the next boot).
+Bare.on('teardown', async () => {
+  try { if (vault) await vault.close() } catch { /* best effort on the way out */ }
+})
 
 function json (obj) {
   return b4a.from(JSON.stringify(obj))

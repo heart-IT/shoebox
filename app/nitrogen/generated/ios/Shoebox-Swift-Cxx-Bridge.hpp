@@ -8,6 +8,8 @@
 #pragma once
 
 // Forward declarations of C++ defined types
+// Forward declaration of `HybridShoeboxEmbedSpec` to properly resolve imports.
+namespace margelo::nitro::shoebox { class HybridShoeboxEmbedSpec; }
 // Forward declaration of `HybridShoeboxPathsSpec` to properly resolve imports.
 namespace margelo::nitro::shoebox { class HybridShoeboxPathsSpec; }
 // Forward declaration of `HybridShoeboxRollSpec` to properly resolve imports.
@@ -16,18 +18,24 @@ namespace margelo::nitro::shoebox { class HybridShoeboxRollSpec; }
 namespace margelo::nitro::shoebox { struct RollAsset; }
 
 // Forward declarations of Swift defined types
+// Forward declaration of `HybridShoeboxEmbedSpec_cxx` to properly resolve imports.
+namespace Shoebox { class HybridShoeboxEmbedSpec_cxx; }
 // Forward declaration of `HybridShoeboxPathsSpec_cxx` to properly resolve imports.
 namespace Shoebox { class HybridShoeboxPathsSpec_cxx; }
 // Forward declaration of `HybridShoeboxRollSpec_cxx` to properly resolve imports.
 namespace Shoebox { class HybridShoeboxRollSpec_cxx; }
 
 // Include C++ defined types
+#include "HybridShoeboxEmbedSpec.hpp"
 #include "HybridShoeboxPathsSpec.hpp"
 #include "HybridShoeboxRollSpec.hpp"
 #include "RollAsset.hpp"
 #include <NitroModules/ArrayBuffer.hpp>
+#include <NitroModules/Promise.hpp>
+#include <NitroModules/PromiseHolder.hpp>
 #include <NitroModules/Result.hpp>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +46,94 @@ namespace Shoebox { class HybridShoeboxRollSpec_cxx; }
  */
 namespace margelo::nitro::shoebox::bridge::swift {
 
+  // pragma MARK: std::vector<double>
+  /**
+   * Specialized version of `std::vector<double>`.
+   */
+  using std__vector_double_ = std::vector<double>;
+  inline std::vector<double> create_std__vector_double_(size_t size) noexcept {
+    std::vector<double> vector;
+    vector.reserve(size);
+    return vector;
+  }
+  
+  // pragma MARK: std::shared_ptr<Promise<std::vector<double>>>
+  /**
+   * Specialized version of `std::shared_ptr<Promise<std::vector<double>>>`.
+   */
+  using std__shared_ptr_Promise_std__vector_double___ = std::shared_ptr<Promise<std::vector<double>>>;
+  inline std::shared_ptr<Promise<std::vector<double>>> create_std__shared_ptr_Promise_std__vector_double___() noexcept {
+    return Promise<std::vector<double>>::create();
+  }
+  inline PromiseHolder<std::vector<double>> wrap_std__shared_ptr_Promise_std__vector_double___(std::shared_ptr<Promise<std::vector<double>>> promise) noexcept {
+    return PromiseHolder<std::vector<double>>(std::move(promise));
+  }
+  
+  // pragma MARK: std::function<void(const std::vector<double>& /* result */)>
+  /**
+   * Specialized version of `std::function<void(const std::vector<double>&)>`.
+   */
+  using Func_void_std__vector_double_ = std::function<void(const std::vector<double>& /* result */)>;
+  /**
+   * Wrapper class for a `std::function<void(const std::vector<double>& / * result * /)>`, this can be used from Swift.
+   */
+  class Func_void_std__vector_double__Wrapper final {
+  public:
+    explicit Func_void_std__vector_double__Wrapper(std::function<void(const std::vector<double>& /* result */)>&& func): _function(std::make_unique<std::function<void(const std::vector<double>& /* result */)>>(std::move(func))) {}
+    inline void call(std::vector<double> result) const noexcept {
+      _function->operator()(result);
+    }
+  private:
+    std::unique_ptr<std::function<void(const std::vector<double>& /* result */)>> _function;
+  } SWIFT_NONCOPYABLE;
+  Func_void_std__vector_double_ create_Func_void_std__vector_double_(void* NON_NULL swiftClosureWrapper) noexcept;
+  inline Func_void_std__vector_double__Wrapper wrap_Func_void_std__vector_double_(Func_void_std__vector_double_ value) noexcept {
+    return Func_void_std__vector_double__Wrapper(std::move(value));
+  }
+  
+  // pragma MARK: std::function<void(const std::exception_ptr& /* error */)>
+  /**
+   * Specialized version of `std::function<void(const std::exception_ptr&)>`.
+   */
+  using Func_void_std__exception_ptr = std::function<void(const std::exception_ptr& /* error */)>;
+  /**
+   * Wrapper class for a `std::function<void(const std::exception_ptr& / * error * /)>`, this can be used from Swift.
+   */
+  class Func_void_std__exception_ptr_Wrapper final {
+  public:
+    explicit Func_void_std__exception_ptr_Wrapper(std::function<void(const std::exception_ptr& /* error */)>&& func): _function(std::make_unique<std::function<void(const std::exception_ptr& /* error */)>>(std::move(func))) {}
+    inline void call(std::exception_ptr error) const noexcept {
+      _function->operator()(error);
+    }
+  private:
+    std::unique_ptr<std::function<void(const std::exception_ptr& /* error */)>> _function;
+  } SWIFT_NONCOPYABLE;
+  Func_void_std__exception_ptr create_Func_void_std__exception_ptr(void* NON_NULL swiftClosureWrapper) noexcept;
+  inline Func_void_std__exception_ptr_Wrapper wrap_Func_void_std__exception_ptr(Func_void_std__exception_ptr value) noexcept {
+    return Func_void_std__exception_ptr_Wrapper(std::move(value));
+  }
+  
+  // pragma MARK: std::shared_ptr<HybridShoeboxEmbedSpec>
+  /**
+   * Specialized version of `std::shared_ptr<HybridShoeboxEmbedSpec>`.
+   */
+  using std__shared_ptr_HybridShoeboxEmbedSpec_ = std::shared_ptr<HybridShoeboxEmbedSpec>;
+  std::shared_ptr<HybridShoeboxEmbedSpec> create_std__shared_ptr_HybridShoeboxEmbedSpec_(void* NON_NULL swiftUnsafePointer) noexcept;
+  void* NON_NULL get_std__shared_ptr_HybridShoeboxEmbedSpec_(std__shared_ptr_HybridShoeboxEmbedSpec_ cppType);
+  
+  // pragma MARK: std::weak_ptr<HybridShoeboxEmbedSpec>
+  using std__weak_ptr_HybridShoeboxEmbedSpec_ = std::weak_ptr<HybridShoeboxEmbedSpec>;
+  inline std__weak_ptr_HybridShoeboxEmbedSpec_ weakify_std__shared_ptr_HybridShoeboxEmbedSpec_(const std::shared_ptr<HybridShoeboxEmbedSpec>& strong) noexcept { return strong; }
+  
+  // pragma MARK: Result<std::shared_ptr<Promise<std::vector<double>>>>
+  using Result_std__shared_ptr_Promise_std__vector_double____ = Result<std::shared_ptr<Promise<std::vector<double>>>>;
+  inline Result_std__shared_ptr_Promise_std__vector_double____ create_Result_std__shared_ptr_Promise_std__vector_double____(const std::shared_ptr<Promise<std::vector<double>>>& value) noexcept {
+    return Result<std::shared_ptr<Promise<std::vector<double>>>>::withValue(value);
+  }
+  inline Result_std__shared_ptr_Promise_std__vector_double____ create_Result_std__shared_ptr_Promise_std__vector_double____(const std::exception_ptr& error) noexcept {
+    return Result<std::shared_ptr<Promise<std::vector<double>>>>::withError(error);
+  }
+  
   // pragma MARK: std::shared_ptr<HybridShoeboxPathsSpec>
   /**
    * Specialized version of `std::shared_ptr<HybridShoeboxPathsSpec>`.

@@ -41,9 +41,10 @@ class MainApplication : Application(), ReactApplication {
       DirectorySoSource(File("/apex/com.android.art/$abiDir"), DirectorySoSource.ON_LD_LIBRARY_PATH)
     )
     loadReactNative(this)
-    // Loads libShoebox and registers our Nitro HybridObjects (ShoeboxPaths,
-    // ShoeboxRoll). Nitrogen generates this entry point but never calls it —
-    // without it createHybridObject throws "not registered … []".
+    // Loads libShoebox and registers all four Nitro HybridObjects (ShoeboxPaths,
+    // ShoeboxRoll, ShoeboxBytes, ShoeboxEmbed). Nitrogen generates this entry
+    // point but never calls it — without it createHybridObject throws
+    // "not registered … []".
     ShoeboxOnLoad.initializeNative()
   }
 }

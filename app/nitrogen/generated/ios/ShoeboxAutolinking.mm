@@ -13,6 +13,7 @@
 #include "HybridShoeboxPathsSpecSwift.hpp"
 #include "HybridShoeboxRollSpecSwift.hpp"
 #include "HybridShoeboxBytes.hpp"
+#include "HybridShoeboxEmbedSpecSwift.hpp"
 
 @interface ShoeboxAutolinking : NSObject
 @end
@@ -44,6 +45,13 @@
                     "The HybridObject \"HybridShoeboxBytes\" is not default-constructible! "
                     "Create a public constructor that takes zero arguments to be able to autolink this HybridObject.");
       return std::make_shared<HybridShoeboxBytes>();
+    }
+  );
+  HybridObjectRegistry::registerHybridObjectConstructor(
+    "ShoeboxEmbed",
+    []() -> std::shared_ptr<HybridObject> {
+      std::shared_ptr<HybridShoeboxEmbedSpec> hybridObject = Shoebox::ShoeboxAutolinking::createShoeboxEmbed();
+      return hybridObject;
     }
   );
 }

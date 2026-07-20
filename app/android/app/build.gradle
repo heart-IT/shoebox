@@ -123,6 +123,17 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // On-device inference (Ch4): TFLite Interpreter runs the embedding model on
+    // the phone — with the NNAPI delegate it uses the device's neural HW.
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+}
+
+// The .tflite model is an asset; don't let aapt compress it (Interpreter mmaps it).
+android {
+    androidResources {
+        noCompress += ["tflite"]
+    }
 }
 
 // Nitrogen-generated sources (Kotlin specs + OnLoad)

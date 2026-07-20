@@ -15,6 +15,7 @@
 #include <fbjni/fbjni.h>
 #include <NitroModules/HybridObjectRegistry.hpp>
 
+#include "JHybridShoeboxEmbedSpec.hpp"
 #include "JHybridShoeboxPathsSpec.hpp"
 #include "JHybridShoeboxRollSpec.hpp"
 #include <NitroModules/DefaultConstructableObject.hpp>
@@ -44,12 +45,21 @@ struct JHybridShoeboxRollSpecImpl: public jni::JavaClass<JHybridShoeboxRollSpecI
     return javaPart->getJHybridShoeboxRollSpec();
   }
 };
+struct JHybridShoeboxEmbedSpecImpl: public jni::JavaClass<JHybridShoeboxEmbedSpecImpl, JHybridShoeboxEmbedSpec::JavaPart> {
+  static constexpr auto kJavaDescriptor = "Lcom/margelo/nitro/shoebox/HybridShoeboxEmbed;";
+  static std::shared_ptr<JHybridShoeboxEmbedSpec> create() {
+    static const auto constructorFn = javaClassStatic()->getConstructor<JHybridShoeboxEmbedSpecImpl::javaobject()>();
+    jni::local_ref<JHybridShoeboxEmbedSpec::JavaPart> javaPart = javaClassStatic()->newObject(constructorFn);
+    return javaPart->getJHybridShoeboxEmbedSpec();
+  }
+};
 
 void registerAllNatives() {
   using namespace margelo::nitro;
   using namespace margelo::nitro::shoebox;
 
   // Register native JNI methods
+  margelo::nitro::shoebox::JHybridShoeboxEmbedSpec::CxxPart::registerNatives();
   margelo::nitro::shoebox::JHybridShoeboxPathsSpec::CxxPart::registerNatives();
   margelo::nitro::shoebox::JHybridShoeboxRollSpec::CxxPart::registerNatives();
 
@@ -73,6 +83,12 @@ void registerAllNatives() {
                     "The HybridObject \"HybridShoeboxBytes\" is not default-constructible! "
                     "Create a public constructor that takes zero arguments to be able to autolink this HybridObject.");
       return std::make_shared<HybridShoeboxBytes>();
+    }
+  );
+  HybridObjectRegistry::registerHybridObjectConstructor(
+    "ShoeboxEmbed",
+    []() -> std::shared_ptr<HybridObject> {
+      return JHybridShoeboxEmbedSpecImpl::create();
     }
   );
 }

@@ -34,6 +34,16 @@
         "language": "c++",
         "implementationClassName": "HybridShoeboxBytes"
       }
+    },
+    "ShoeboxEmbed": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridShoeboxEmbed"
+      },
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "HybridShoeboxEmbed"
+      }
     }
   },
   "ignorePaths": ["node_modules"]

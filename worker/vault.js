@@ -15,14 +15,11 @@ const { resolveStruct } = require('./spec')
 const photoEncoding = resolveStruct('@shoebox/photo', 1)
 
 // Keys sort chronologically because the capture time is an 8-byte BIG-ENDIAN
-// prefix. A time window is therefore a Hyperbee range query, not a scan (Inv:
-// the grid is a windowed query against an index, not a walk of a folder).
-//
-// The tail must make the key UNIQUE: a bee key is an identity, so a key two
-// photos can share means the second put OVERWRITES the first and orphans its
-// blob. takenAt+name is not unique (a burst can stamp several frames with one
-// filename at one millisecond), so the tail ends with the blob's byteOffset,
-// which no two non-empty blobs in a core share.
+// prefix, so a newest-first read is a bounded reverse scan of the tree. The name
+// and a per-blob disambiguator follow: the disambiguator is the blob's byte
+// offset in the blobs core, which is UNIQUE per write (hyperblobs serializes
+// puts), so two different photos with the same capture-ms and filename can never
+// collide onto one key and silently overwrite each other.
 function photoKey (takenAt, name, disambiguator) {
   const tail = name + '\x00' + disambiguator // null-separated so name can't bleed into it
   const key = b4a.alloc(8 + b4a.byteLength(tail))
@@ -66,6 +63,7 @@ class Vault {
     this.server = null
     this.swarm = null
     this._count = null // computed lazily by ensureCount()
+    this._counting = null // in-flight count scan, memoized so callers share it
   }
 
   async ready () {
@@ -97,12 +95,15 @@ class Vault {
   }
 
   // Announce the index core so a remote peer (the peek script) can replicate.
+  // Announcing is best-effort: swarm.flush() rejects when the DHT is unreachable
+  // (offline), which must NEVER fail a locally-successful import — the whole
+  // point is local-first. The announce is queued and propagates once online.
   async share () {
     if (this.swarm) return
     this.swarm = new Hyperswarm()
     this.swarm.on('connection', (conn) => this.store.replicate(conn))
     this.swarm.join(this.indexCore.discoveryKey, { server: true, client: false })
-    await this.swarm.flush()
+    await this.swarm.flush().catch(() => {})
   }
 
   async importPhoto (buffer, meta = {}) {
@@ -130,6 +131,8 @@ class Vault {
       height: meta.height || 0,
       orientation: meta.orientation || 0,
       thumb: meta.thumb || '',
+      dhash: meta.dhash || '',
+      embedding: meta.embedding || null,
     }
     // byteOffset is unique per non-empty put, so the key is unique — no
     // get-then-put, no overwrite, no orphaned blob. The count was materialized
@@ -160,7 +163,6 @@ class Vault {
     return node ? this.decorate(node.value, node.key) : null
   }
 
-  // Attach the localhost blob-server URL; the bytes stay out of the record.
   // Attach the localhost blob-server URL and a stable id (the hex key); the
   // bytes stay out of the record.
   decorate (record, key) {
@@ -174,17 +176,33 @@ class Vault {
       byteOffset: record.byteOffset,
       byteLength: record.blobByteLength,
     }
-    return this.server.getLink(record.blobsCoreKey, { blob: id })
+    return this.server.getLink(record.blobsCoreKey, { blob: id, type: record.mime })
   }
 
   async count () {
     return this.ensureCount()
   }
 
+  // Mobile background/foreground. Suspend the blob-server too, not just the
+  // swarm — otherwise its localhost TCP socket stays bound the whole time the
+  // app is backgrounded.
+  async suspend () {
+    if (this.swarm) await this.swarm.suspend()
+    if (this.server) await this.server.suspend()
+  }
+
+  async resume () {
+    if (this.swarm) await this.swarm.resume()
+    if (this.server) await this.server.resume()
+  }
+
   async close () {
-    if (this.swarm) await this.swarm.destroy()
-    if (this.server) await this.server.close()
-    await this.store.close()
+    // Reverse dependency order, each guarded so one failure can't strand the
+    // rest. The blob-server owns the store we handed it and closes it in its own
+    // _close(), so we don't double-close the store when the server exists.
+    if (this.swarm) await this.swarm.destroy().catch(() => {})
+    if (this.server) await this.server.close().catch(() => {})
+    else await this.store.close().catch(() => {})
   }
 }
 

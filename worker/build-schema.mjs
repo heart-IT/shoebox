@@ -2,15 +2,15 @@
 // build-schema.mjs). Hyperschema emits compact-encoding codecs into spec/.
 // Inv-4: this schema is an append-only contract — you may add OPTIONAL fields
 // forever*, but never remove one or make an old one required, or records written
-// by past versions stop decoding. `orientation`, `width`, `height`, and `thumb`
-// are all optional precisely so a photo imported before those fields existed
-// still decodes today.
+// by past versions stop decoding. `orientation`, `width`, `height`, `thumb`,
+// `dhash`, and `embedding` are all optional precisely so a photo imported before
+// those fields existed still decodes today.
 //
 // * NOT literally forever: the generated encoder reserves ONE byte for the
 //   optional-field presence flags (compact uint, 1 byte holds ≤252). With 7
 //   optional fields the flag bitmask maxes at 127 (still 1 byte); the 8th
 //   optional field pushes it past 252 and needs 3 bytes the codegen doesn't
-//   reserve → corruption. We have 4. If you approach 7-8, split into a nested
+//   reserve → corruption. We have 6. If you approach 7-8, split into a nested
 //   struct rather than adding a flat 8th optional field.
 import Hyperschema from 'hyperschema'
 
@@ -35,6 +35,8 @@ shoebox.register({
     { name: 'height', type: 'uint' },
     { name: 'orientation', type: 'uint' },
     { name: 'thumb', type: 'string' }, // ≤256px data: URL
+    { name: 'dhash', type: 'string' }, // 16-hex dHash for near-duplicate clustering (Ch4)
+    { name: 'embedding', type: 'buffer' }, // float32 scene embedding for semantic search (Ch4)
   ],
 })
 

@@ -8,6 +8,8 @@
 #pragma once
 
 // Forward declarations of C++ defined types
+// Forward declaration of `HybridShoeboxEmbedSpec` to properly resolve imports.
+namespace margelo::nitro::shoebox { class HybridShoeboxEmbedSpec; }
 // Forward declaration of `HybridShoeboxPathsSpec` to properly resolve imports.
 namespace margelo::nitro::shoebox { class HybridShoeboxPathsSpec; }
 // Forward declaration of `HybridShoeboxRollSpec` to properly resolve imports.
@@ -16,10 +18,12 @@ namespace margelo::nitro::shoebox { class HybridShoeboxRollSpec; }
 namespace margelo::nitro::shoebox { struct RollAsset; }
 
 // Include C++ defined types
+#include "HybridShoeboxEmbedSpec.hpp"
 #include "HybridShoeboxPathsSpec.hpp"
 #include "HybridShoeboxRollSpec.hpp"
 #include "RollAsset.hpp"
 #include <NitroModules/ArrayBuffer.hpp>
+#include <NitroModules/Promise.hpp>
 #include <NitroModules/Result.hpp>
 #include <exception>
 #include <memory>
@@ -36,6 +40,8 @@ namespace margelo::nitro::shoebox { struct RollAsset; }
 #include <NitroModules/DateToChronoDate.hpp>
 
 // Forward declarations of Swift defined types
+// Forward declaration of `HybridShoeboxEmbedSpec_cxx` to properly resolve imports.
+namespace Shoebox { class HybridShoeboxEmbedSpec_cxx; }
 // Forward declaration of `HybridShoeboxPathsSpec_cxx` to properly resolve imports.
 namespace Shoebox { class HybridShoeboxPathsSpec_cxx; }
 // Forward declaration of `HybridShoeboxRollSpec_cxx` to properly resolve imports.

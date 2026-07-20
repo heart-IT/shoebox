@@ -8,6 +8,7 @@
 #include "Shoebox-Swift-Cxx-Bridge.hpp"
 
 // Include C++ implementation defined types
+#include "HybridShoeboxEmbedSpecSwift.hpp"
 #include "HybridShoeboxPathsSpecSwift.hpp"
 #include "HybridShoeboxRollSpecSwift.hpp"
 #include "Shoebox-Swift-Cxx-Umbrella.hpp"
@@ -15,6 +16,38 @@
 
 namespace margelo::nitro::shoebox::bridge::swift {
 
+  // pragma MARK: std::function<void(const std::vector<double>& /* result */)>
+  Func_void_std__vector_double_ create_Func_void_std__vector_double_(void* NON_NULL swiftClosureWrapper) noexcept {
+    auto swiftClosure = Shoebox::Func_void_std__vector_double_::fromUnsafe(swiftClosureWrapper);
+    return [swiftClosure = std::move(swiftClosure)](const std::vector<double>& result) mutable -> void {
+      swiftClosure.call(result);
+    };
+  }
+  
+  // pragma MARK: std::function<void(const std::exception_ptr& /* error */)>
+  Func_void_std__exception_ptr create_Func_void_std__exception_ptr(void* NON_NULL swiftClosureWrapper) noexcept {
+    auto swiftClosure = Shoebox::Func_void_std__exception_ptr::fromUnsafe(swiftClosureWrapper);
+    return [swiftClosure = std::move(swiftClosure)](const std::exception_ptr& error) mutable -> void {
+      swiftClosure.call(error);
+    };
+  }
+  
+  // pragma MARK: std::shared_ptr<HybridShoeboxEmbedSpec>
+  std::shared_ptr<HybridShoeboxEmbedSpec> create_std__shared_ptr_HybridShoeboxEmbedSpec_(void* NON_NULL swiftUnsafePointer) noexcept {
+    Shoebox::HybridShoeboxEmbedSpec_cxx swiftPart = Shoebox::HybridShoeboxEmbedSpec_cxx::fromUnsafe(swiftUnsafePointer);
+    return std::make_shared<margelo::nitro::shoebox::HybridShoeboxEmbedSpecSwift>(swiftPart);
+  }
+  void* NON_NULL get_std__shared_ptr_HybridShoeboxEmbedSpec_(std__shared_ptr_HybridShoeboxEmbedSpec_ cppType) {
+    std::shared_ptr<margelo::nitro::shoebox::HybridShoeboxEmbedSpecSwift> swiftWrapper = std::dynamic_pointer_cast<margelo::nitro::shoebox::HybridShoeboxEmbedSpecSwift>(cppType);
+    #ifdef NITRO_DEBUG
+    if (swiftWrapper == nullptr) [[unlikely]] {
+      throw std::runtime_error("Class \"HybridShoeboxEmbedSpec\" is not implemented in Swift!");
+    }
+    #endif
+    Shoebox::HybridShoeboxEmbedSpec_cxx& swiftPart = swiftWrapper->getSwiftPart();
+    return swiftPart.toUnsafe();
+  }
+  
   // pragma MARK: std::shared_ptr<HybridShoeboxPathsSpec>
   std::shared_ptr<HybridShoeboxPathsSpec> create_std__shared_ptr_HybridShoeboxPathsSpec_(void* NON_NULL swiftUnsafePointer) noexcept {
     Shoebox::HybridShoeboxPathsSpec_cxx swiftPart = Shoebox::HybridShoeboxPathsSpec_cxx::fromUnsafe(swiftUnsafePointer);

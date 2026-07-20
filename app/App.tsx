@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
+  AppState,
   Button,
   Image,
   SafeAreaView,
@@ -17,6 +18,7 @@ import { SAMPLE_PHOTO_BASE64 } from './src/sample-photo'
 import { documentsPath } from './src/paths'
 import { requestRollPermission, rollModule, type RollAsset } from './src/roll'
 import { bytesModule } from './src/bytes'
+import { embedModule, packEmbedding } from './src/embed'
 import { VaultClient } from './src/vault-client'
 import { Meter, type Reading } from './src/meter'
 import { Grid } from './src/Grid'
@@ -49,7 +51,20 @@ export default function App() {
       .then(s => setStatus(`vault ready — ${s.photos} photo(s)`))
       .catch(e => setStatus(`worker error: ${String(e)}`))
 
-    return () => worklet.terminate()
+    // Forward the OS lifecycle to the worklet. On background, suspend the swarm
+    // and the localhost blob-server socket — otherwise they stay open, iOS kills
+    // the process and the battery drains. Resume on return to foreground.
+    // Best-effort: a suspend/resume rejection must never crash the app. We only
+    // act on 'background' (not the transient iOS 'inactive'), and 'active'.
+    const sub = AppState.addEventListener('change', next => {
+      if (next === 'background') client.suspend().catch(() => {})
+      else if (next === 'active') client.resume().catch(() => {})
+    })
+
+    return () => {
+      sub.remove()
+      worklet.terminate()
+    }
   }, [])
 
   const openRoll = async () => {
@@ -94,21 +109,24 @@ export default function App() {
 
     const meter = new Meter()
     meter.start(Date.now())
-    try {
-      for (const a of assets) {
-        if (!a.path) continue // skip assets with no readable path (iOS)
+    let failures = 0
+    for (const a of assets) {
+      if (!a.path) continue // skip assets with no readable path (iOS)
+      try {
+        // Per-photo isolation: one unreadable/corrupt file must not abort the
+        // whole batch.
         await step(roll, a, meter)
         meter.recordPhoto(a.byteLength)
+      } catch {
+        failures++
       }
-      const r = meter.stop(Date.now())
-      setReading(r)
-      setReadingLabel(label)
-      const s = await client.stat()
-      setStatus(`imported ${r.photos} (${label}) · vault now ${s.photos}`)
-    } catch (e) {
-      meter.stop(Date.now())
-      setStatus(`import failed: ${String(e)}`)
     }
+    const r = meter.stop(Date.now())
+    setReading(r)
+    setReadingLabel(label)
+    const s = await client.stat().catch(() => null)
+    const skipped = failures ? ` (${failures} skipped)` : ''
+    setStatus(`imported ${r.photos} (${label})${skipped}${s ? ` · vault now ${s.photos}` : ''}`)
   }
 
   // Movement 2 — the measured wrong way: base64 string per photo over the RPC.
@@ -119,17 +137,24 @@ export default function App() {
       await clientRef.current!.importPhoto(a.name, base64, a.takenAt)
     })
 
-  // Movement 3 — hand-rolled C++ mmap: mapFile returns an ArrayBuffer that
-  // points straight at the file's mapped pages (zero copy), released on GC. No
-  // base64, no JSON. Same workload as naive; the meter tells the difference.
+  // Import + index: mmap the bytes AND run the on-device embedding model over
+  // each photo (Ch4). The vector is computed on the phone and stored in the
+  // index next to the photo — pixels never leave (Inv-5). Slower than a plain
+  // import because inference runs per photo (the "backfill is expensive" cost).
   const importRollZeroCopy = () => {
     const bytes = bytesModule()
+    const embed = embedModule()
     if (!bytes) return setStatus('ShoeboxBytes native module missing')
-    return measuredImport('mmap bytes (C++)', async (_roll, a, meter) => {
+    return measuredImport('import + embed', async (_roll, a, meter) => {
       const buf: ArrayBuffer = bytes.mapFile(a.path)
       const view = new Uint8Array(buf)
       meter.recordInFlight(view.length)
-      await clientRef.current!.importRaw({ name: a.name, takenAt: a.takenAt }, view)
+      let embedding: string | undefined
+      if (embed) {
+        // await: embed() is async now (inference runs off the JS thread).
+        try { embedding = packEmbedding(await embed.embed(a.path)) } catch { /* skip */ }
+      }
+      await clientRef.current!.importRaw({ name: a.name, takenAt: a.takenAt, embedding }, view)
     })
   }
 
@@ -164,7 +189,7 @@ export default function App() {
         <Button title="Import one photo" onPress={importOne} />
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
-        <Button title={`Import ${BATCH} (mmap C++)`} onPress={importRollZeroCopy} />
+        <Button title={`Import + embed ${BATCH}`} onPress={importRollZeroCopy} />
         <Button title={`Import ${BATCH} (nitro Kotlin)`} onPress={importRollNitro} />
 
         {reading && (

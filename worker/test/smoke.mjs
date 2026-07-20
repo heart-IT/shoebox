@@ -1,6 +1,7 @@
 // Vault smoke test under Node — proves the worker core is host-agnostic:
 // import photos, serve them over the blob-server, range-query the time-ordered
-// index, and verify the Inv-4 append-only schema contract.
+// index, verify the Inv-4 append-only schema contract, the 64-bit key encoding
+// on REAL epoch-ms values, and that same-time/same-name photos never collide.
 import { createRequire } from 'module'
 import assert from 'assert'
 import fs from 'fs'
@@ -8,7 +9,7 @@ import os from 'os'
 import path from 'path'
 
 const require = createRequire(import.meta.url)
-const { Vault } = require('../vault.js')
+const { Vault, writeUint64BE, photoKey } = require('../vault.js')
 const c = require('compact-encoding')
 const { resolveStruct } = require('../spec')
 
@@ -16,12 +17,23 @@ const PNG_1PX = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64'
 )
-
-// A visually different 1px PNG — a genuinely distinct photo, for the key-collision test.
+// A second, distinct 1×1 (red) so a same-time/same-name pair has different bytes.
 const PNG_1PX_RED = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8z8BQDwAEhQGAdSm3AAAAAABJRU5ErkJggg==',
   'base64'
 )
+
+// --- Unit: 64-bit big-endian key encoding on a REAL epoch-ms value (> 2^32,
+// which the high-word split exists for and which the vault path actually uses).
+const nowMs = 1_752_900_000_000 // ~2025, well above 2^32
+const buf = Buffer.alloc(8)
+writeUint64BE(buf, nowMs, 0)
+const back = buf.readBigUInt64BE(0)
+assert.equal(Number(back), nowMs, '64-bit BE round-trips a real epoch-ms value')
+// Chronological bytewise order: an earlier time sorts before a later one.
+const kA = photoKey(1000, 'a.jpg', 0)
+const kB = photoKey(2000, 'a.jpg', 0)
+assert.ok(Buffer.compare(kA, kB) < 0, 'earlier capture time sorts first (bytewise)')
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-smoke-'))
 const vault = new Vault(dir)
@@ -43,19 +55,9 @@ const newest = await vault.list({ limit: 2, reverse: true })
 assert.deepEqual(newest.map((p) => p.name), ['c.png', 'b.png'], 'range query returns newest-first window')
 const latest = await vault.latest()
 assert.equal(latest.name, 'c.png', 'latest() is the max capture-time')
+assert.ok(latest.id && latest.id.length > 0, 'records carry a stable id')
 
-// Inv-4: the schema is an append-only contract. A record written WITHOUT the
-// optional `orientation` field still decodes; making it required would break it.
-const enc = resolveStruct('@shoebox/photo', 1)
-const oldShape = {
-  name: 'legacy.png', takenAt: 500, mime: 'image/png', byteLength: 68,
-  blobsCoreKey: Buffer.alloc(32), blockOffset: 0, blockLength: 1, byteOffset: 0, blobByteLength: 68,
-} // no width/height/orientation/thumb — as if written by an earlier version
-const decoded = c.decode(enc, c.encode(enc, oldShape))
-assert.equal(decoded.name, 'legacy.png', 'a record missing the optional fields still decodes')
-assert.equal(decoded.orientation, 0, 'absent optional field reads as its zero value')
-
-// The key is an identity, so it must be unique: two DIFFERENT photos sharing a
+// Regression for the fixed data-loss bug: two DISTINCT photos with the SAME
 // capture-ms and SAME name must both survive (no key collision, no overwrite).
 await vault.importPhoto(PNG_1PX, { name: 'dup.png', takenAt: 5000 })
 await vault.importPhoto(PNG_1PX_RED, { name: 'dup.png', takenAt: 5000 })
@@ -63,6 +65,17 @@ assert.equal(await vault.count(), 5, 'same time+name photos do NOT collide')
 const dups = (await vault.list({ limit: 100 })).filter((p) => p.name === 'dup.png')
 assert.equal(dups.length, 2, 'both same-time/same-name photos are retrievable')
 assert.notEqual(dups[0].id, dups[1].id, 'they get distinct ids')
+
+// Inv-4: the schema is an append-only contract. A record written WITHOUT the
+// optional fields still decodes; making them required would break it.
+const enc = resolveStruct('@shoebox/photo', 1)
+const oldShape = {
+  name: 'legacy.png', takenAt: 500, mime: 'image/png', byteLength: 68,
+  blobsCoreKey: Buffer.alloc(32), blockOffset: 0, blockLength: 1, byteOffset: 0, blobByteLength: 68,
+} // no width/height/orientation/thumb/dhash/embedding — as an earlier version wrote
+const decoded = c.decode(enc, c.encode(enc, oldShape))
+assert.equal(decoded.name, 'legacy.png', 'a record missing the optional fields still decodes')
+assert.equal(decoded.embedding, null, 'absent optional buffer reads as null')
 
 // A 0-byte import is refused: hyperblobs does not advance byteOffset for an
 // empty put, so the key disambiguator would degenerate and two empties could
@@ -93,4 +106,4 @@ assert.equal(await raceVault.count(), 1, 'count is exact after a STAT raced the 
 await raceVault.close()
 fs.rmSync(raceDir, { recursive: true, force: true })
 
-console.log(`smoke: ok — 5 photos indexed; time-ordered range query, unique 64-bit key with no same-key collision, Inv-4 schema contract, and the 0-byte guard all verified via ${new URL(link).origin}`)
+console.log('smoke: ok — 5 photos indexed; time-ordered range query, 64-bit key, no same-key collision, Inv-4, 0-byte guard, count-race all verified')

@@ -23,16 +23,23 @@ const encoding0 = {
     c.uint.preencode(state, m.blockLength)
     c.uint.preencode(state, m.byteOffset)
     c.uint.preencode(state, m.blobByteLength)
-    state.end++ // max flag is 8 so always one byte
+    state.end++ // max flag is 32 so always one byte
 
     if (m.width) c.uint.preencode(state, m.width)
     if (m.height) c.uint.preencode(state, m.height)
     if (m.orientation) c.uint.preencode(state, m.orientation)
     if (m.thumb) c.string.preencode(state, m.thumb)
+    if (m.dhash) c.string.preencode(state, m.dhash)
+    if (m.embedding) c.buffer.preencode(state, m.embedding)
   },
   encode(state, m) {
     const flags =
-      (m.width ? 1 : 0) | (m.height ? 2 : 0) | (m.orientation ? 4 : 0) | (m.thumb ? 8 : 0)
+      (m.width ? 1 : 0) |
+      (m.height ? 2 : 0) |
+      (m.orientation ? 4 : 0) |
+      (m.thumb ? 8 : 0) |
+      (m.dhash ? 16 : 0) |
+      (m.embedding ? 32 : 0)
 
     c.string.encode(state, m.name)
     c.uint.encode(state, m.takenAt)
@@ -49,6 +56,8 @@ const encoding0 = {
     if (m.height) c.uint.encode(state, m.height)
     if (m.orientation) c.uint.encode(state, m.orientation)
     if (m.thumb) c.string.encode(state, m.thumb)
+    if (m.dhash) c.string.encode(state, m.dhash)
+    if (m.embedding) c.buffer.encode(state, m.embedding)
   },
   decode(state) {
     const r0 = c.string.decode(state)
@@ -75,7 +84,9 @@ const encoding0 = {
       width: (flags & 1) !== 0 ? c.uint.decode(state) : 0,
       height: (flags & 2) !== 0 ? c.uint.decode(state) : 0,
       orientation: (flags & 4) !== 0 ? c.uint.decode(state) : 0,
-      thumb: (flags & 8) !== 0 ? c.string.decode(state) : null
+      thumb: (flags & 8) !== 0 ? c.string.decode(state) : null,
+      dhash: (flags & 16) !== 0 ? c.string.decode(state) : null,
+      embedding: (flags & 32) !== 0 ? c.buffer.decode(state) : null
     }
   }
 }

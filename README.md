@@ -42,7 +42,19 @@ changes; the generated output in `nitrogen/generated/` is committed.
 | `ch01-one-photo` | One photo stored in Hyperblobs, rendered through a localhost blob-server URL, replicated to a laptop via the sealed teaser |
 | `ch02-importing-the-roll` | The whole camera roll imported four ways, measured on-screen: naive base64 (796 ms JS-thread stall) → mmap'd bytes over bare-rpc → a hand-rolled C++ zero-copy `ArrayBuffer` → the typed Nitro reveal (35–51 ms stall). Enumeration via a Nitro `ShoeboxRoll` module |
 | `ch03-the-library` | A time-ordered photo grid over the vault: the index is a **Hyperbee** keyed by capture-time (range queries), records are **Hyperschema**/compact-encoding (append-only, Inv-4). The worker generates ≤256px **bare-media** thumbnails shipped as `data:` URLs; a windowed **FlashList** grid paints from the index, and originals load lazily on tap via the blob-server |
+| `ch04-search` | Search that never leaves the phone: a **dHash** near-duplicate column computed in the worker, and a MobileNet **embedding** run on the device's neural HW (**TFLite + NNAPI** behind a Nitro module) written into the index. "Find similar" and "near-duplicates" run offline as Hamming/cosine over the index columns — nothing leaves the device (Inv-5) |
 
 Each measured import path is a button in the app; the on-screen meter reports
 throughput, worst JS-thread stall, and peak in-flight bytes. See `VERSIONS.md`
 for the per-movement drift findings and numbers.
+
+## Known limitations
+
+- **The grid loads the whole library in one shot.** `Grid` issues a single
+  `list()` that returns every record — base64 `data:` thumbnail and float32
+  embedding inline — and holds it in state. Fine at demo scale (hundreds of
+  photos); a real 10k+ library needs a windowed/paginated `LIST` plus thumbnails
+  served over the blob-server as URLs (like originals). Serving thumbnails as
+  blobs is blocked by the append-only schema — a thumb-blob pointer would push
+  past the 7-optional-field flag-byte cliff (see `worker/build-schema.mjs`) — so
+  it's deliberately left for a later chapter rather than bolted on here.
