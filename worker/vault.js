@@ -15,7 +15,7 @@ const BlindPairing = require('blind-pairing')
 const idEncoding = require('hypercore-id-encoding')
 const z32 = require('z32') // invites are variable-length, not 32-byte keys
 const b4a = require('b4a')
-const { CMD, commandEncoding, openView, apply, photoKey, disambiguator, writeUint64BE } = require('./library')
+const { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleOf, writeUint64BE } = require('./library')
 
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', heic: 'image/heic', webp: 'image/webp', gif: 'image/gif' }
 function mimeFor (name) {
@@ -62,10 +62,41 @@ class Vault {
 
     this.server = new BlobServer(this.store)
     await this.server.listen()
+
+    await this.ensureOwner()
   }
 
-  // The linearized index every peer converges to.
-  get view () { return this.base.view }
+  // The founder claims OWNER of the library on first boot. Idempotent — once the
+  // role exists (this boot or a later one) it's a no-op. Joiners (bootstrap set)
+  // and non-writers never self-claim.
+  async ensureOwner () {
+    if (this.bootstrap || !this.base.writable) return
+    await this.base.update()
+    if (await roleOf(this.base.view.roles, this.base.local.key)) return
+    await this.base.append({ type: CMD.SET_ROLE, writerKey: this.base.local.key, role: ROLE.OWNER })
+    await this.base.update()
+  }
+
+  // The album's roster: [{ writerKey (hex), role }]. Reads the roles bee.
+  async members () {
+    await this.base.update()
+    const out = []
+    for await (const { key, value } of this.base.view.roles.createReadStream()) {
+      out.push({ writerKey: key, role: value })
+    }
+    return out
+  }
+
+  // Revoke a member (owner-only, enforced in apply()). Their future writes stop;
+  // their existing photos stay.
+  async removeMember (writerKeyHex) {
+    await this.base.append({ type: CMD.REMOVE_WRITER, writerKey: b4a.from(writerKeyHex, 'hex') })
+    await this.base.update()
+  }
+
+  // The linearized photo index every peer converges to (roles are the other half
+  // of the view — see base.view.roles, the album's authority model).
+  get view () { return this.base.view.photos }
 
   // The library's durable identity — stable across devices coming and going.
   get libraryKey () { return this.base.key }
@@ -116,18 +147,12 @@ class Vault {
   async createInvite () {
     if (!this.swarm) await this.share()
     if (!this.pairing) this.pairing = new BlindPairing(this.swarm)
-    // A fresh invite closes any previous one, so invites can be rotated.
-    if (this.member) { await this.member.close().catch(() => {}); this.member = null }
     const { invite, publicKey, discoveryKey } = BlindPairing.createInvite(this.base.key)
-    let used = false
     this.member = this.pairing.addMember({
       discoveryKey,
       onadd: async (req) => {
         const writerKey = req.open(publicKey) // the candidate's 32-byte writer key
-        // SINGLE-USE: only the first valid candidate is admitted; deny the rest, so a
-        // leaked invite is not a standing credential.
-        if (used || !writerKey || writerKey.byteLength !== 32) return req.deny()
-        used = true
+        if (!writerKey || writerKey.byteLength !== 32) return req.deny()
         await this.base.append({ type: CMD.ADD_WRITER, writerKey })
         req.confirm({ key: this.base.key }) // unencrypted library → hand back just the key
       }

@@ -41,7 +41,7 @@ const deadline = Date.now() + 45000
 let node = null
 while (Date.now() < deadline) {
   await base.update()
-  node = await base.view.peek({ reverse: true }) // newest capture-time
+  node = await base.view.photos.peek({ reverse: true }) // newest capture-time
   if (node) break
   await new Promise((r) => setTimeout(r, 100))
 }

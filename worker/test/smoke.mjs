@@ -16,8 +16,9 @@ const Corestore = require('corestore')
 const Autobase = require('autobase')
 const Hyperblobs = require('hyperblobs')
 const idEncoding = require('hypercore-id-encoding')
+const crypto = require('hypercore-crypto')
 const { resolveStruct } = require('../spec')
-const { CMD, commandEncoding, openView, apply } = require('../library')
+const { CMD, commandEncoding, openView, apply, roleOf } = require('../library')
 const { primaryKeyFromSeed } = require('../identity')
 
 const PNG_1PX = Buffer.from(
@@ -129,7 +130,7 @@ const r1 = founder.base.replicate(true)
 const r2 = replica.replicate(false)
 r1.pipe(r2).pipe(r1)
 let seen = null
-for (let i = 0; i < 300 && !seen; i++) { await new Promise((res) => setImmediate(res)); await replica.update(); seen = await replica.view.peek({ reverse: true }) }
+for (let i = 0; i < 300 && !seen; i++) { await new Promise((res) => setImmediate(res)); await replica.update(); seen = await replica.view.photos.peek({ reverse: true }) }
 assert.ok(seen && seen.value.name === 'shared.png', 'a read replica converges to the founder photo over replication')
 const rblobs = new Hyperblobs(replicaStore.get({ key: seen.value.blobsCoreKey }))
 let bytes = null
@@ -194,13 +195,29 @@ await devBase.append({ type: CMD.IMPORT_PHOTO, photo: {
   width: 0, height: 0, orientation: 0, thumb: '', dhash: '', embedding: null,
 } })
 await devBase.update()
-const viewNames = async (base) => { await base.update(); const out = []; for await (const { value } of base.view.createReadStream()) out.push(value.name); return out.sort() }
+const viewNames = async (base) => { await base.update(); const out = []; for await (const { value } of base.view.photos.createReadStream()) out.push(value.name); return out.sort() }
 let dn = [], fn = []
 for (let i = 0; i < 400; i++) { await new Promise((res) => setImmediate(res)); await fVault.base.update(); await devBase.update(); dn = await viewNames(devBase); fn = await viewNames(fVault.base); if (dn.length === 2 && fn.length === 2) break }
 assert.deepEqual(dn, ['laptop.png', 'phone.png'], 'device view holds BOTH photos')
 assert.deepEqual(fn, ['laptop.png', 'phone.png'], 'founder view holds BOTH photos — the laptop import converged')
+// Ch6 M1: roles + owner-only membership. The founder self-claimed owner; the
+// writer it added is a member; and a member cannot add a writer of its own.
+assert.equal(await roleOf(fVault.base.view.roles, fVault.base.local.key), 'owner', 'founder self-claimed owner')
+assert.equal(await roleOf(fVault.base.view.roles, devWriterKey), 'member', 'the invited writer is a member')
+const stranger = crypto.randomBytes(32)
+await devBase.append({ type: CMD.ADD_WRITER, writerKey: stranger })
+for (let i = 0; i < 200; i++) { await new Promise((res) => setImmediate(res)); await fVault.base.update(); await devBase.update() }
+assert.equal(await roleOf(fVault.base.view.roles, stranger), null, 'a member cannot add a writer — owner-only membership')
+// Ch6 M2: revocation. The owner kicks the member; the member loses write access
+// (base.writable → false), but its already-shared photo stays (Inv-8: revoke the
+// future, not the past).
+await fVault.removeMember(b4a.toString(devWriterKey, 'hex'))
+for (let i = 0; i < 400 && devBase.writable; i++) { await new Promise((res) => setImmediate(res)); await fVault.base.update(); await devBase.update() }
+assert.ok(!devBase.writable, 'a revoked member loses write access')
+assert.equal(await roleOf(fVault.base.view.roles, devWriterKey), null, 'the revoked member has no role')
+assert.ok((await viewNames(fVault.base)).includes('laptop.png'), 'the revoked member\'s past photo remains (revoke the future, not the past)')
 w1.destroy(); w2.destroy()
 await devBase.close(); await devStore.close(); await fVault.close()
 fs.rmSync(founderDir, { recursive: true, force: true }); fs.rmSync(devDir, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence all verified')
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation all verified')

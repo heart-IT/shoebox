@@ -1,102 +1,136 @@
 // The deterministic library contract — the ONE piece of code every device runs
 // identically. It defines the command wire format and the apply() that turns a
-// linearized command log into the shared photo index. The phone (vault.js) and
-// the desktop peer (peek.mjs) both import it, so their Autobase views converge
-// byte for byte. Nothing here touches the network, the blob store, or the clock:
-// apply() MUST be pure and deterministic — Autobase replays it on every peer,
-// so a Date.now()/random()/IO on the view-writing path would diverge the peers.
+// linearized command log into the shared view. Ch6 splits the view in two: a
+// `photos` bee (the capture-time index) and a `roles` bee (who may do what), so
+// authority is DATA in the replicated view, gated deterministically. apply()
+// MUST stay pure — Autobase replays it on every peer, so a Date.now()/random()/IO
+// on the view-writing path would diverge the peers.
 
 const Hyperbee = require('hyperbee')
 const c = require('compact-encoding')
 const b4a = require('b4a')
 const { resolveStruct } = require('./spec')
 
-// The VIEW record is the generated Hyperschema struct (compact-encoding).
+// The photo record is the generated Hyperschema struct (compact-encoding).
 const photoEncoding = resolveStruct('@shoebox/photo', 1)
 
 // Commands on the log are a tagged union: a uint type, then the payload.
-// IMPORT_PHOTO carries a full photo record (pointer + metadata); ADD_WRITER
-// (Ch5 M3) carries a 32-byte device writer key. Integers, not strings.
-const CMD = { IMPORT_PHOTO: 1, ADD_WRITER: 2 }
+const CMD = { IMPORT_PHOTO: 1, ADD_WRITER: 2, SET_ROLE: 3, REMOVE_WRITER: 4 }
 
-// Value-encoding for the Autobase log: [uint type][payload]. Reuses the photo
-// struct as the IMPORT payload so the wire stays compact-encoded end to end.
+// Roles are the album's authority model. The founder is the OWNER; invited
+// people are MEMBERS. Owners manage membership; members add photos.
+const ROLE = { OWNER: 'owner', MEMBER: 'member' }
+
 const commandEncoding = {
   preencode (state, cmd) {
     c.uint.preencode(state, cmd.type)
     if (cmd.type === CMD.IMPORT_PHOTO) photoEncoding.preencode(state, cmd.photo)
     else if (cmd.type === CMD.ADD_WRITER) c.fixed32.preencode(state, cmd.writerKey)
+    else if (cmd.type === CMD.REMOVE_WRITER) c.fixed32.preencode(state, cmd.writerKey)
+    else if (cmd.type === CMD.SET_ROLE) { c.fixed32.preencode(state, cmd.writerKey); c.string.preencode(state, cmd.role) }
   },
   encode (state, cmd) {
     c.uint.encode(state, cmd.type)
     if (cmd.type === CMD.IMPORT_PHOTO) photoEncoding.encode(state, cmd.photo)
     else if (cmd.type === CMD.ADD_WRITER) c.fixed32.encode(state, cmd.writerKey)
+    else if (cmd.type === CMD.REMOVE_WRITER) c.fixed32.encode(state, cmd.writerKey)
+    else if (cmd.type === CMD.SET_ROLE) { c.fixed32.encode(state, cmd.writerKey); c.string.encode(state, cmd.role) }
   },
   decode (state) {
     const type = c.uint.decode(state)
     if (type === CMD.IMPORT_PHOTO) return { type, photo: photoEncoding.decode(state) }
     if (type === CMD.ADD_WRITER) return { type, writerKey: c.fixed32.decode(state) }
+    if (type === CMD.REMOVE_WRITER) return { type, writerKey: c.fixed32.decode(state) }
+    if (type === CMD.SET_ROLE) return { type, writerKey: c.fixed32.decode(state), role: c.string.decode(state) }
     return { type }
   }
 }
 
-// open() builds the linearized VIEW — the capture-time Hyperbee every peer
-// converges to. It is written ONLY by apply(). Same key/value encoding as the
-// Ch3 single-writer index, so the record format is unchanged (Inv-4 holds).
+// open() builds the VIEW every peer converges to — two bees written ONLY by
+// apply(): `photos` (the capture-time index, unchanged since Ch3) and `roles`
+// (writer-key hex → 'owner' | 'member').
 function openView (store) {
-  return new Hyperbee(store.get('view'), { keyEncoding: 'binary', valueEncoding: photoEncoding, extension: false })
+  return {
+    photos: new Hyperbee(store.get('view'), { keyEncoding: 'binary', valueEncoding: photoEncoding, extension: false }),
+    roles: new Hyperbee(store.get('roles'), { keyEncoding: 'utf-8', valueEncoding: 'utf-8', extension: false }),
+  }
 }
 
-// apply() is the SOLE writer of the view and must be deterministic — identical
-// output on every peer, every replay. Validation failures are no-ops (never
-// throw); only genuine corruption should throw, to halt indexing rather than
-// let peers diverge. `host` grants addWriter/removeWriter (used in M3).
+// apply() is the SOLE writer of the view and must be deterministic. Validation /
+// authority failures are no-ops (never throw); only genuine corruption throws.
 async function apply (nodes, view, host) {
   for (const node of nodes) {
     const cmd = node.value
+    const author = node.from && node.from.key // the writer that authored this block
+
     if (cmd.type === CMD.IMPORT_PHOTO) {
+      // Any writer may import; a removed writer simply can't append new blocks.
       const p = cmd.photo
-      if (!p || !p.blobsCoreKey) continue // structural gate, not a throw
+      if (!p || !p.blobsCoreKey) continue
       const key = photoKey(p.takenAt, p.name, disambiguator(p))
-      if (await view.get(key)) continue // idempotent: a replayed/dup import is a no-op
-      await view.put(key, p)
+      if (await view.photos.get(key)) continue // idempotent
+      await view.photos.put(key, p)
+    } else if (cmd.type === CMD.SET_ROLE) {
+      if (!author) continue
+      if (cmd.role === ROLE.OWNER && b4a.equals(cmd.writerKey, author) && !(await hasOwner(view.roles))) {
+        // Bootstrap: the FIRST writer claims ownership when no owner exists yet.
+        // Deterministic (reads the replicated roles bee); safe because a founding
+        // library has exactly one writer at claim time.
+        await view.roles.put(roleKey(cmd.writerKey), ROLE.OWNER)
+      } else if (await roleOf(view.roles, author) === ROLE.OWNER) {
+        await view.roles.put(roleKey(cmd.writerKey), cmd.role)
+      }
     } else if (cmd.type === CMD.ADD_WRITER) {
-      // Authorize a device as a writer. The gate is DETERMINISTIC — it reads the
-      // replicated writer registry (host.system) — so every peer reaches the same
-      // decision on every replay. Failures are no-ops, never throws.
+      // OWNER-only now (Ch5 let any writer add). Adding a writer also makes them
+      // a member — access and role are granted together.
       const key = cmd.writerKey
-      if (!key || key.byteLength !== 32) continue // structural
-      if (await host.system.has(key)) continue // idempotent: already a writer / replay
-      // Authority: only a block authored by an existing writer may add one. A
-      // non-optimistic block is only ever authored by a writer, so the founder's
-      // legitimate ADD_WRITER passes and nothing else can.
-      if (!node.from || !(await host.system.has(node.from.key))) continue
-      await host.addWriter(key, { indexer: false }) // read-write, NOT a consensus indexer
+      if (!key || key.byteLength !== 32) continue
+      if (!author || await roleOf(view.roles, author) !== ROLE.OWNER) continue
+      // Gate re-admission on OUR roles view, not host.system.has(): system.has() stays
+      // true for REMOVED writers, so re-adding a revoked member would skip addWriter
+      // and leave a phantom (role set, never writable again).
+      if (!(await roleOf(view.roles, key))) await host.addWriter(key, { indexer: false })
+      await view.roles.put(roleKey(key), ROLE.MEMBER)
+    } else if (cmd.type === CMD.REMOVE_WRITER) {
+      // Revocation — OWNER-only. Stops the member's FUTURE writes; their already-
+      // shared photos remain, because the log is append-only (Inv-8: you can
+      // revoke the future, never un-share the past). An owner can't be removed.
+      const key = cmd.writerKey
+      if (!key || key.byteLength !== 32) continue
+      if (!author || await roleOf(view.roles, author) !== ROLE.OWNER) continue
+      if (await roleOf(view.roles, key) === ROLE.OWNER) continue
+      if (host.removeable(key)) {
+        await host.removeWriter(key)
+        await view.roles.del(roleKey(key))
+      }
     }
   }
 }
 
-// A blob's GLOBALLY-unique address: which device's blobs core, and the byte
-// offset within it. byteOffset alone is unique only INSIDE one core, so two
-// devices both starting at offset 0 would collide onto one key in the merged
-// view and silently overwrite each other — the core key disambiguates writers.
+// --- roles ---
+function roleKey (writerKey) { return b4a.toString(writerKey, 'hex') }
+async function roleOf (roles, writerKey) { const n = await roles.get(roleKey(writerKey)); return n ? n.value : null }
+async function hasOwner (roles) {
+  for await (const { value } of roles.createReadStream()) if (value === ROLE.OWNER) return true
+  return false
+}
+
+// A blob's GLOBALLY-unique address: which device's core + the byte offset in it.
 function disambiguator (record) {
   return b4a.toString(record.blobsCoreKey, 'hex') + ':' + record.byteOffset
 }
 
-// Keys sort chronologically because the capture time is an 8-byte BIG-ENDIAN
-// prefix, so a newest-first read is a bounded reverse scan. The name and the
-// cross-writer disambiguator follow, null-separated so the name can't bleed in.
+// Keys sort chronologically: an 8-byte BIG-ENDIAN capture-time prefix, then the
+// name and the cross-writer disambiguator, null-separated.
 function photoKey (takenAt, name, disambiguator) {
   const tail = name + '\x00' + disambiguator
   const key = b4a.alloc(8 + b4a.byteLength(tail))
-  writeUint64BE(key, Math.max(0, takenAt), 0) // clamp: a pre-1970 date must not sort as newest
+  writeUint64BE(key, Math.max(0, takenAt), 0)
   b4a.write(key, tail, 8)
   return key
 }
 
 function writeUint64BE (buf, value, offset) {
-  // JS numbers are safe to 2^53; split into two 32-bit halves.
   const high = Math.floor(value / 0x100000000)
   const low = value >>> 0
   buf[offset] = (high >>> 24) & 0xff
@@ -109,4 +143,4 @@ function writeUint64BE (buf, value, offset) {
   buf[offset + 7] = low & 0xff
 }
 
-module.exports = { CMD, commandEncoding, openView, apply, photoKey, disambiguator, writeUint64BE }
+module.exports = { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleKey, roleOf, writeUint64BE }

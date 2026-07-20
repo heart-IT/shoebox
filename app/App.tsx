@@ -37,6 +37,8 @@ export default function App() {
   const [readingLabel, setReadingLabel] = useState('')
   const [showGrid, setShowGrid] = useState(false)
   const [invite, setInvite] = useState<string | null>(null)
+  const [showMembers, setShowMembers] = useState(false)
+  const [members, setMembers] = useState<{ writerKey: string; role: string }[]>([])
   const clientRef = useRef<VaultClient | null>(null)
 
   useEffect(() => {
@@ -101,6 +103,30 @@ export default function App() {
       setStatus('invite ready — pair a laptop with join.mjs')
     } catch (e) {
       setStatus(`invite failed: ${String(e)}`)
+    }
+  }
+
+  // The album roster + revocation. The owner sees every member and can kick one;
+  // a kicked member's FUTURE writes are blocked (their existing photos remain).
+  const openMembers = async () => {
+    try {
+      const res = await clientRef.current!.members()
+      setMembers(res.members)
+      setShowMembers(true)
+    } catch (e) {
+      setStatus(`members failed: ${String(e)}`)
+    }
+  }
+
+  const kick = async (writerKey: string) => {
+    setStatus('revoking…')
+    try {
+      await clientRef.current!.removeMember(writerKey)
+      const res = await clientRef.current!.members()
+      setMembers(res.members)
+      setStatus('member revoked — their future writes are blocked')
+    } catch (e) {
+      setStatus(`revoke failed: ${String(e)}`)
     }
   }
 
@@ -184,6 +210,29 @@ export default function App() {
       await clientRef.current!.importRaw({ name: a.name, takenAt: a.takenAt }, view)
     })
 
+  if (showMembers && clientRef.current) {
+    return (
+      <SafeAreaView style={styles.root}>
+        <Button title="← back" onPress={() => setShowMembers(false)} />
+        <ScrollView contentContainerStyle={styles.content}>
+          <Text style={styles.title}>Members</Text>
+          {members.map(m => (
+            <View
+              key={m.writerKey}
+              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 8 }}
+            >
+              <Text style={{ color: '#ccc', fontFamily: 'Menlo', fontSize: 13 }}>
+                {m.role} · {m.writerKey.slice(0, 12)}…
+              </Text>
+              {m.role !== 'owner' && <Button title="Kick" onPress={() => kick(m.writerKey)} />}
+            </View>
+          ))}
+          {members.length === 0 && <Text style={styles.status}>No members yet.</Text>}
+        </ScrollView>
+      </SafeAreaView>
+    )
+  }
+
   if (showGrid && clientRef.current) {
     return (
       <SafeAreaView style={styles.root}>
@@ -202,6 +251,7 @@ export default function App() {
         <Button title="Show grid" onPress={() => setShowGrid(true)} />
         <Button title="Import one photo" onPress={importOne} />
         <Button title="Invite a device" onPress={inviteDevice} />
+        <Button title="Members" onPress={openMembers} />
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
         <Button title={`Import + embed ${BATCH}`} onPress={importRollZeroCopy} />

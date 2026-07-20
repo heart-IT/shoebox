@@ -26,7 +26,7 @@ async function withThumb (bytes, meta) {
 
 // bare-rpc encodes the command as a uint on the wire — commands are integers,
 // not strings. This map is the wire contract; the app mirrors it exactly.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, ERROR: 9 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9 }
 
 let vault = null
 // Requests can arrive before the vault finishes opening; gate every command on
@@ -99,6 +99,15 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         // `node join.mjs <invite>` with (it joins as a WRITER, not a read peer).
         req.reply(json({ invite: await vault.createInvite() }))
         break
+      case CMD.LIST_MEMBERS:
+        req.reply(json({ members: await vault.members() }))
+        break
+      case CMD.REMOVE_MEMBER: {
+        const { writerKey } = JSON.parse(b4a.toString(req.data))
+        await vault.removeMember(writerKey)
+        req.reply(json({ ok: true }))
+        break
+      }
       default:
         req.reply(json({ error: `unknown command: ${req.command}` }))
     }

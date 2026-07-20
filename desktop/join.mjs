@@ -71,13 +71,15 @@ if (!base.writable) {
 await pairing.close() // pairing done; keep the swarm + base alive to stay in sync
 
 console.log('✓ writable — this device is now a writer in the library')
+// If the owner revokes us (Ch6), Autobase flips this device unwritable.
+base.on('unwritable', () => console.log('✗ write access REVOKED by the owner — this device can no longer add photos'))
 
 // ---- Ch5 M4: the payoff. Import a photo authored HERE; it converges to the
 // phone. And read the merged view — it already holds the phone's photos too.
 async function libraryNames () {
   await base.update()
   const out = []
-  for await (const { value } of base.view.createReadStream({ reverse: true })) out.push(value.name)
+  for await (const { value } of base.view.photos.createReadStream({ reverse: true })) out.push(value.name)
   return out
 }
 
