@@ -469,3 +469,30 @@ comment even called it dead code without the hook. M1 makes it load-bearing:
   resumes into a world where some peer stayed up); the chapter's deep-dive
   owns the simultaneous case (it is also why an always-on mirror — Part 9 —
   earns its keep).
+
+## Ch08 M2 — the suspend→resume exception filter (2026-07-21)
+
+The OS closes a backgrounded app's sockets behind its back; on resume, Bare
+cleans up the corpses and throws from callbacks with no JS catcher — crashing
+the worklet on every re-focus. `worker/lifecycle.js` + the install in
+`worker/index.js`:
+
+- **Narrow allowlist, cause-chain aware.** `ENOTCONN / ECONNRESET / EPIPE /
+  ETIMEDOUT / ECONNABORTED` only — teardown errors surface WRAPPED out of
+  hyperswarm/secret-stream internals, so the predicate walks `err.cause`
+  (bounded at 8 hops; a cyclic chain terminates). Nothing else is ever
+  swallowed: the allowlist stays narrow so real bugs crash loudly.
+- **A window, not a mode.** The filter is live from the moment SUSPEND begins
+  until 5 s after RESUME completes — dead-socket cleanup fires during and
+  shortly *after* resume, not neatly inside the suspended state. Outside the
+  window the identical benign error is fatal, same as before the filter
+  existed.
+- **Every swallow is logged.** A silent crash-eater is worse than a crash.
+- **Host-agnostic install.** The emitter is a parameter: `Bare` in the worklet
+  (consistent with the existing `Bare.on('teardown')`), `process` under Node —
+  which is how the smoke proves the real semantics: a child process survives a
+  wrapped `ECONNRESET` thrown inside the window (exit 0), and dies on the
+  identical throw with the window closed (non-zero) — the filter never
+  outlives its window.
+- On-device verification (a real backgrounded worklet throwing on re-focus) is
+  the chapter's device-soak territory, with the rest of Ch8.

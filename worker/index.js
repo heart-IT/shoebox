@@ -10,7 +10,15 @@ const RPC = require('bare-rpc')
 const b4a = require('b4a')
 const idEncoding = require('hypercore-id-encoding')
 const { Vault, pairAsCandidate } = require('./vault')
+const { createSuspensionWindow, installSuspensionFilter } = require('./lifecycle')
 const thumbnail = require('./thumbnail')
+
+// The OS closes our sockets while we're backgrounded; on resume, Bare cleans up
+// the corpses and throws from callbacks with no JS catcher. Swallow exactly that
+// class (narrow allowlist, cause-chain aware), exactly in the suspend→resume
+// window; everything else re-throws and crashes loudly, as before (Ch8 M2).
+const suspension = createSuspensionWindow()
+installSuspensionFilter(Bare, suspension, { log: console.error })
 
 // Eager ≤256px preview per import, generated in the worker (never the renderer).
 // Unsupported/corrupt images import without a thumb rather than failing — but we
@@ -93,11 +101,17 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         break
       }
       case CMD.SUSPEND:
+        // Window opens BEFORE the teardown starts — the first dead-socket throw
+        // can arrive while suspend is still dropping connections.
+        suspension.onSuspend()
         await vault.suspend()
         req.reply(json({ ok: true }))
         break
       case CMD.RESUME:
         await vault.resume()
+        // Closes settleMs from now, not immediately: the socket-corpse cleanup
+        // fires during and shortly AFTER resume, not neatly inside suspension.
+        suspension.onResume()
         req.reply(json({ ok: true }))
         break
       case CMD.CREATE_INVITE:

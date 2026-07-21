@@ -7,6 +7,7 @@ import assert from 'assert'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { spawnSync } from 'child_process'
 
 const require = createRequire(import.meta.url)
 const { Vault, pairAsCandidate, writeUint64BE, photoKey } = require('../vault.js')
@@ -558,4 +559,79 @@ assert.ok(Buffer.from(await s8res.arrayBuffer()).equals(PNG_1PX), 'and the serve
 await s8Member.close(); await s8Founder.close(); await s8net.destroy()
 fs.rmSync(s8fDir, { recursive: true, force: true }); fs.rmSync(s8mDir, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival) all verified')
+// Ch8 M2: THE SUSPEND→RESUME EXCEPTION FILTER. The OS closes sockets behind a
+// backgrounded app's back; on resume, Bare cleans up the corpses and throws
+// from callbacks with no JS catcher. The filter swallows exactly that class
+// (narrow allowlist, cause-chain aware, bounded walk), exactly in the
+// suspend→resume window, logs every swallow, and re-throws everything else —
+// in every app state. Predicate and window are pure logic; the process-level
+// contract is proven on a real Node process below.
+const { isBenignSocketError, createSuspensionWindow, installSuspensionFilter } = require('../lifecycle.js')
+const mkErr = (code) => Object.assign(new Error(code), { code })
+
+// The predicate: a bare code hits; a code WRAPPED in err.cause chains hits
+// (that's how hyperswarm/secret-stream teardown errors actually surface).
+assert.ok(isBenignSocketError(mkErr('ECONNRESET')), 'a bare benign code is recognized')
+const wrapped = new Error('outer'); wrapped.cause = new Error('mid'); wrapped.cause.cause = mkErr('ENOTCONN')
+assert.ok(isBenignSocketError(wrapped), 'a benign code wrapped two causes deep is recognized')
+assert.ok(!isBenignSocketError(new Error('plain')), 'no code → not benign')
+assert.ok(!isBenignSocketError(mkErr('EACCES')), 'a non-socket code → not benign (the allowlist is narrow)')
+assert.ok(!isBenignSocketError(null), 'null survives the walk')
+const cyclic = mkErr('EWEIRD'); cyclic.cause = cyclic
+assert.ok(!isBenignSocketError(cyclic), 'a cyclic cause chain terminates (bounded walk)')
+let deepErr = new Error('l0'); let deepCur = deepErr
+for (let i = 0; i < 8; i++) { deepCur.cause = new Error('l' + (i + 1)); deepCur = deepCur.cause }
+deepCur.code = 'ECONNRESET'
+assert.ok(!isBenignSocketError(deepErr), 'a code beyond the hop bound is NOT reached — the walk is truly bounded')
+
+// The window: closed by default, open from suspend, open for settleMs past
+// resume (dead-socket cleanup fires during and shortly AFTER resume), then
+// closed. Clock injected so the test never sleeps.
+const win = createSuspensionWindow({ settleMs: 5000 })
+assert.ok(!win.isOpen(0), 'window starts closed')
+win.onSuspend()
+assert.ok(win.isOpen(999999), 'window is open while suspended, regardless of clock')
+win.onResume(10000)
+assert.ok(win.isOpen(14999), 'window stays open through the settle period after resume')
+assert.ok(!win.isOpen(15000), 'window closes once the settle period ends')
+
+// The handler contract, on a fake emitter: benign-in-window is swallowed AND
+// logged (a silent crash-eater is worse than a crash); benign-out-of-window
+// and non-benign-in-window re-throw; uninstall detaches.
+const swallowLog = []
+const fakeEmitter = { handler: null, on (ev, fn) { this.handler = fn }, off () { this.handler = null } }
+const win2 = createSuspensionWindow({ settleMs: 5000 })
+const uninstall = installSuspensionFilter(fakeEmitter, win2, { log: (m) => swallowLog.push(m) })
+win2.onSuspend()
+fakeEmitter.handler(mkErr('ECONNRESET')) // must return, not throw
+assert.equal(swallowLog.length, 1, 'a swallow is logged, never silent')
+assert.throws(() => fakeEmitter.handler(mkErr('EACCES')), /EACCES/, 'a non-benign error re-throws even inside the window')
+win2.onResume(0) // settle period ended long before Date.now()
+assert.throws(() => fakeEmitter.handler(mkErr('ECONNRESET')), /ECONNRESET/, 'a benign error OUTSIDE the window re-throws — the filter is not a standing crash-eater')
+uninstall()
+assert.equal(fakeEmitter.handler, null, 'uninstall detaches the handler')
+
+// The real process-level semantics, on child Node processes (the same hook
+// shape the worklet installs on Bare): a wrapped benign throw inside the
+// window is survived; the identical throw with the window closed is fatal.
+const lifecyclePath = require.resolve('../lifecycle.js')
+const childSurvives = spawnSync(process.execPath, ['-e', `
+  const { createSuspensionWindow, installSuspensionFilter } = require(${JSON.stringify(lifecyclePath)})
+  const w = createSuspensionWindow()
+  installSuspensionFilter(process, w)
+  w.onSuspend()
+  setImmediate(() => { const e = new Error('teardown'); e.cause = Object.assign(new Error('reset'), { code: 'ECONNRESET' }); throw e })
+  setTimeout(() => console.log('survived'), 50)
+`], { encoding: 'utf-8', timeout: 20000 })
+assert.equal(childSurvives.status, 0, 'a benign socket throw inside the window does not kill the process')
+assert.ok(childSurvives.stdout.includes('survived'), 'the process keeps running after the swallowed throw')
+const childDies = spawnSync(process.execPath, ['-e', `
+  const { createSuspensionWindow, installSuspensionFilter } = require(${JSON.stringify(lifecyclePath)})
+  installSuspensionFilter(process, createSuspensionWindow()) // window never opened
+  setImmediate(() => { throw Object.assign(new Error('reset'), { code: 'ECONNRESET' }) })
+  setTimeout(() => console.log('survived'), 50)
+`], { encoding: 'utf-8', timeout: 20000 })
+assert.notEqual(childDies.status, 0, 'the SAME benign throw with the window closed is fatal — the filter never outlives its window')
+assert.ok(!childDies.stdout.includes('survived'), 'the out-of-window process died before its timer')
+
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level) all verified')
