@@ -8,7 +8,8 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
-    "bundle:worker": "bare-pack --preset mobile --out worker.bundle.mjs node_modules/shoebox-worker/index.js"
+    "bundle:worker": "bare-pack --preset mobile --out worker.bundle.mjs node_modules/shoebox-worker/index.js && node check-bundle.mjs --write",
+    "check:bundle": "node check-bundle.mjs"
   },
   "dependencies": {
     "@react-native/new-app-screen": "0.86.0",

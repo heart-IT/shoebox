@@ -44,7 +44,7 @@ function hammingHex (a, b) {
 class Vault {
   // `bootstrap` (a library key, z-base-32) joins an EXISTING library as a second
   // device (Ch5 M3); null founds a new one (this device becomes the first writer).
-  constructor (storagePath, { bootstrap = null, primaryKey = null, encryptionKey = null, boxKeyPair = null, dhtBootstrap = null, blindPeerKeys = null } = {}) {
+  constructor (storagePath, { bootstrap = null, primaryKey = null, encryptionKey = null, boxKeyPair = null, dhtBootstrap = null, blindPeerKeys = null, relayThrough = null } = {}) {
     // A seed-derived primaryKey makes every core — including this device's
     // Autobase writer key — a pure function of the device seed, so it's
     // recoverable. `unsafe: true` acknowledges we manage the key deliberately
@@ -94,6 +94,12 @@ class Vault {
     this.blindPeerKeys = blindPeerKeys
     this.blind = null // BlindPeering client, created with the swarm in share()
     this.wakeup = null
+    // Audit AF-H6: symmetric-NAT relay fallback. A relay node's public key (both
+    // phones on carrier CGNAT can't holepunch directly; the relay bridges them).
+    // null → no relay (works only when at least one side is directly reachable);
+    // a deployment supplies a running relay node's key. Wired into every swarm
+    // and the mirror client so coverage is uniform.
+    this.relayThrough = relayThrough
     // Audit AF-M4: serialize roster/rotation mutations. RPC handlers run
     // concurrently, so two overlapping removeMember() calls could each read the
     // same currentEpoch and mint the SAME epoch with different keys — the second
@@ -297,7 +303,7 @@ class Vault {
     if (this.swarm) return
     // maxPeers bounds the connection fan-out — a cheap DoS ceiling now that an
     // invite is single-use (a leaked/old discoveryKey can still draw connections).
-    this.swarm = new Hyperswarm({ maxPeers: 64, ...(this.dhtBootstrap ? { bootstrap: this.dhtBootstrap } : {}) })
+    this.swarm = new Hyperswarm({ maxPeers: 64, ...(this.dhtBootstrap ? { bootstrap: this.dhtBootstrap } : {}), ...(this.relayThrough ? { relayThrough: this.relayThrough } : {}) })
     // base.replicate = store.replicate (all cores: writer logs, view, blobs) PLUS
     // the wakeup protocol — the hint layer that tells peers which writers advanced.
     // Plain store.replicate omits wakeup, so a joiner never learns to fetch.
@@ -323,6 +329,7 @@ class Vault {
         keys: this.blindPeerKeys,
         pick: 1,
         suspended: this.suspended, // a client minted mid-background starts suspended
+        ...(this.relayThrough ? { relayThrough: this.relayThrough } : {}),
       })
       this.blind.addAutobaseBackground(this.base)
       for (const blobs of this.blobsByEpoch.values()) {
@@ -357,7 +364,7 @@ class Vault {
     if (!this.blind) {
       this.wakeup = this.wakeup || new Wakeup(() => { this.base.update().catch(() => {}) })
       for (const conn of this.swarm.connections) this.wakeup.addStream(conn) // catch up existing peers
-      this.blind = new BlindPeering(this.swarm.dht, this.store, { wakeup: this.wakeup, keys, pick: 1, suspended: this.suspended })
+      this.blind = new BlindPeering(this.swarm.dht, this.store, { wakeup: this.wakeup, keys, pick: 1, suspended: this.suspended, ...(this.relayThrough ? { relayThrough: this.relayThrough } : {}) })
     } else {
       this.blind.setKeys(keys)
     }
@@ -838,7 +845,7 @@ Vault.SUSPEND_DRAIN_MS = 5000
 // its bootstrap (the library key). So this owns just the handshake — a throwaway
 // store handle to read our writer key, a throwaway swarm to pair — and closes
 // both so the Vault can reopen the store cleanly.
-async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKeyPair = null, dhtBootstrap = null, timeoutMs = 75000 } = {}) {
+async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKeyPair = null, dhtBootstrap = null, timeoutMs = 75000, relayThrough = null } = {}) {
   const store = primaryKey
     ? new Corestore(storagePath, { primaryKey, unsafe: true })
     : new Corestore(storagePath)
@@ -853,7 +860,7 @@ async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKey
   // keys get sealed to (Ch7 M3).
   const userData = boxKeyPair ? b4a.concat([writerKey, boxKeyPair.publicKey]) : writerKey
 
-  const swarm = new Hyperswarm(dhtBootstrap ? { bootstrap: dhtBootstrap } : {})
+  const swarm = new Hyperswarm({ ...(dhtBootstrap ? { bootstrap: dhtBootstrap } : {}), ...(relayThrough ? { relayThrough } : {}) })
   // Audit AF (P2P): a pairing-window peer reset (ECONNRESET/EPIPE) would
   // otherwise surface as an unhandled 'error' and crash the worklet in the
   // FOREGROUND, outside the suspend/resume filter. Swallow per-socket like the

@@ -206,7 +206,7 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         if (vault) { await vault.close(); vault = null } // release the store before pairing reopens it
         let delivered
         try {
-          delivered = await pairAsCandidate(ctx.vaultPath, { primaryKey: ctx.primaryKey, invite, boxKeyPair: ctx.boxKeyPair })
+          delivered = await pairAsCandidate(ctx.vaultPath, { primaryKey: ctx.primaryKey, invite, boxKeyPair: ctx.boxKeyPair, relayThrough: ctx.relayThrough })
           ctx.saveMembership(ctx.fs, ctx.membershipPath, { libraryKey: delivered.libraryKey, albumKey: delivered.encryptionKey })
         } finally {
           // Reboot into a LIVE vault no matter what: on success membership now
@@ -253,6 +253,11 @@ async function main () {
   const blindPeerArg = Bare.argv[1] || null
   const mirrorPath = path.join(base, 'shoebox-mirrors')
   const bootMirrorZ = [...new Set([...(blindPeerArg ? [blindPeerArg] : []), ...loadMirrors(fs, mirrorPath)])]
+  // AF-H6: an optional relay node key (a `shoebox-relay` file, one z32) — the
+  // symmetric-NAT fallback. Absent → no relay (deployment choice; needs a
+  // running relay node). A garbled file is ignored, not fatal.
+  let relayThrough = null
+  try { const r = loadMirrors(fs, path.join(base, 'shoebox-relay'))[0]; if (r) relayThrough = idEncoding.decode(r) } catch { /* invalid relay key — skip */ }
   // The device identity seed — minted once, persisted, the root every core
   // descends from. It seeds both the device's keys (primaryKey) and the album's
   // encryption key. (A later chapter backs it up as a mnemonic and moves it into
@@ -273,6 +278,7 @@ async function main () {
     founderAlbumKey: encryptionKeyFromSeed(seed),
     boxKeyPair: memberBoxKeyFromSeed(seed), // opens content keys sealed to us on rotation (Ch7 M3)
     blindPeerKeys: bootMirrorZ.length ? bootMirrorZ.map((z) => idEncoding.decode(z)) : null,
+    relayThrough,
   }
   await bootVault()
 }
@@ -298,6 +304,7 @@ async function bootVault () {
       encryptionKey: b4a.from(membership.albumKey),
       boxKeyPair: ctx.boxKeyPair,
       blindPeerKeys: ctx.blindPeerKeys,
+      relayThrough: ctx.relayThrough,
     })
   } else {
     vault = new Vault(ctx.vaultPath, {
@@ -305,6 +312,7 @@ async function bootVault () {
       encryptionKey: ctx.founderAlbumKey,
       boxKeyPair: ctx.boxKeyPair,
       blindPeerKeys: ctx.blindPeerKeys,
+      relayThrough: ctx.relayThrough,
     })
   }
   await vault.ready()

@@ -787,3 +787,39 @@ the following. Fixes land in severity batches, each counterfactual-verified
   stale "7-field flag-byte cliff" comment is corrected to match F4; and the
   privacy-narrative assertions the Part 10 draft references are now marked
   `// REVIEWER:` in the smoke, making that claim literally true.
+
+### Batch 8 — relay fallback, bundle-freshness gate, role hardening
+
+- **AF-H6 (HIGH, P2P):** `relayThrough` is now wired into every swarm (vault,
+  pairing candidate) and the mirror client, from an optional `shoebox-relay`
+  file (one z32 key). null → no relay (as before); a deployment supplies a
+  running relay node's key for symmetric-NAT/CGNAT coverage. Smoke: `AF-H6`
+  (the key threads through; connectivity via a real relay node is a deployment
+  concern, not asserted). **Remaining:** operating a relay node is a deployment
+  step, not code — and until one is configured, two both-symmetric-NAT peers
+  with no mirror between them still can't connect.
+- **AF-H9 (HIGH, production):** `app/check-bundle.mjs` + `npm run check:bundle`
+  hash the worker source and compare to `worker.bundle.hash` (recorded by
+  `bundle:worker`), so a stale committed bundle fails the check. Verified: a
+  one-line worker edit makes the gate report STALE. **Remaining:** wire
+  `check:bundle` into a precommit hook / CI (the repo has neither yet).
+- **AF (latent SET_ROLE):** `apply()` now writes only KNOWN roles — an owner
+  can set MEMBER, and only the one-time bootstrap self-claim mints an OWNER; a
+  second-owner or garbage-role SET_ROLE is a no-op. Smoke: exactly-one-owner
+  invariant holds after a promote attempt.
+
+### Documented as remaining (native / deployment work, not in-repo code)
+
+- **AF-H5 (full):** platform keychain (iOS Keychain / Android Keystore) for the
+  seed + a 24-word mnemonic backup. Partial done (atomic writes, 0o600). This
+  is the standing ship-blocker for the "data collected: none" claim.
+- **AF-M10:** thumbnails live in both the append-only log block and the view,
+  are never evictable, and every new device replays full history — ~1-2 GB at
+  50k photos. The real fix (thumbnails as blob pointers + snapshot/prune) is a
+  future chapter; the RAM half is already noted in the Grid limitation.
+- **AF-M13 (full):** the sync line now flags a non-responding worker (Batch 6),
+  but structured error codes (vs stringified stacks) and an on-disk rolling
+  diagnostics buffer remain for a production observability pass.
+- **AF-L (refreshLink):** the blob-server's fresh-port fallback is unwired; held
+  links break only if the original-port re-bind fails on resume (rare), and the
+  grid re-mints links on reopen. Left as a known minor.

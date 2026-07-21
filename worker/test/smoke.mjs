@@ -478,6 +478,44 @@ assert.ok(b4a.equals(m4opened, m4keyA), 'AF-M4: the FIRST rotation for an epoch 
 await m4.close()
 fs.rmSync(m4Dir, { recursive: true, force: true })
 
+// Audit AF (latent SET_ROLE): apply() only ever writes a KNOWN role. An owner
+// appending SET_ROLE(other, 'owner') or a garbage role must NOT mint a second
+// owner or corrupt the model — only the one-time bootstrap self-claim mints an
+// owner. (A second owner would enable the concurrent-rotation collision AF-M4
+// guards.) Founder + one member, then the founder tries to promote/garble.
+const srDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-sr-'))
+const srF = new Vault(srDir)
+await srF.ready()
+const srMemDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-srM-'))
+const srMemStore = new Corestore(srMemDir)
+const srLocal = Autobase.getLocalCore(srMemStore)
+await srLocal.ready(); const srMemKey = b4a.from(srLocal.key); await srLocal.close()
+await srF.base.append({ type: CMD.ADD_WRITER, writerKey: srMemKey })
+await srF.base.update()
+assert.equal(await roleOf(srF.base.view.roles, srMemKey), 'member', 'the added writer is a member')
+await srF.base.append({ type: CMD.SET_ROLE, writerKey: srMemKey, role: 'owner' }) // try to mint a second owner
+await srF.base.append({ type: CMD.SET_ROLE, writerKey: srMemKey, role: 'banana' }) // garbage role
+await srF.base.update()
+assert.equal(await roleOf(srF.base.view.roles, srMemKey), 'member', 'SET_ROLE cannot promote a member to owner or set a garbage role')
+let srOwners = 0
+for await (const { value } of srF.base.view.roles.createReadStream()) if (value === 'owner') srOwners++
+assert.equal(srOwners, 1, 'the library still has exactly one owner')
+await srF.close(); await srMemStore.close()
+fs.rmSync(srDir, { recursive: true, force: true }); fs.rmSync(srMemDir, { recursive: true, force: true })
+
+// Audit AF-H6: a Vault accepts a relayThrough key and wires it into its swarm
+// without breaking boot/share (connectivity via a real relay node is a
+// deployment concern, not asserted here).
+const relDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-rel-'))
+const relNet = await createTestnet(3)
+const relVault = new Vault(relDir, { dhtBootstrap: relNet.bootstrap, relayThrough: crypto.randomBytes(32) })
+await relVault.ready()
+await relVault.importPhoto(PNG_1PX, { name: 'r.png', takenAt: 1 })
+await relVault.share() // must not throw with a relay key set
+assert.equal(relVault.relayThrough.byteLength, 32, 'AF-H6: the relay key is wired through to the swarm')
+await relVault.close(); await relNet.destroy()
+fs.rmSync(relDir, { recursive: true, force: true })
+
 // Audit AF-H2: pairAsCandidate is BOUNDED — when nobody answers the invite it
 // times out and cleans up, instead of polling forever (which, since the JOIN
 // handler tears down the live vault first, used to brick the worker until an

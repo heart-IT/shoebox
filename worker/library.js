@@ -97,13 +97,20 @@ async function apply (nodes, view, host) {
       await view.photos.put(key, p)
     } else if (cmd.type === CMD.SET_ROLE) {
       if (!author) continue
+      // Audit AF (latent): only ever write a KNOWN role. An owner appending a
+      // garbage or second-owner role can't corrupt the authority model — the
+      // bootstrap self-claim below is the ONLY path that mints an owner, and it
+      // fires just once (guarded by hasOwner). A second owner would enable the
+      // concurrent-rotation epoch collision AF-M4's write-once guard defends.
       if (cmd.role === ROLE.OWNER && b4a.equals(cmd.writerKey, author) && !(await hasOwner(view.roles))) {
         // Bootstrap: the FIRST writer claims ownership when no owner exists yet.
         // Deterministic (reads the replicated roles bee); safe because a founding
         // library has exactly one writer at claim time.
         await view.roles.put(roleKey(cmd.writerKey), ROLE.OWNER)
-      } else if (await roleOf(view.roles, author) === ROLE.OWNER) {
-        await view.roles.put(roleKey(cmd.writerKey), cmd.role)
+      } else if (cmd.role === ROLE.MEMBER && await roleOf(view.roles, author) === ROLE.OWNER) {
+        // An owner may set MEMBER (only) on another writer — never mint a second
+        // owner or an unknown role through the normal path.
+        await view.roles.put(roleKey(cmd.writerKey), ROLE.MEMBER)
       }
     } else if (cmd.type === CMD.ADD_WRITER) {
       // OWNER-only now (Ch5 let any writer add). Adding a writer also makes them
