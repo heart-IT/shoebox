@@ -23,6 +23,8 @@ export class Meter {
   private t0 = 0
   private lastTick = 0
   private timer: ReturnType<typeof setInterval> | null = null
+  private pausedMs = 0
+  private pausedAt = 0
   bytes = 0
   photos = 0
   jsStallMs = 0
@@ -31,15 +33,35 @@ export class Meter {
   start(nowMs: number): void {
     this.t0 = nowMs
     this.lastTick = nowMs
-    // A heartbeat on the JS thread. When a synchronous chunk (base64 read,
-    // JSON serialize) blocks the thread, this interval fires late; the lateness
-    // is the stall.
+    this.startHeartbeat()
+  }
+
+  // A heartbeat on the JS thread. When a synchronous chunk (base64 read,
+  // JSON serialize) blocks the thread, this interval fires late; the lateness
+  // is the stall.
+  private startHeartbeat(): void {
     this.timer = setInterval(() => {
       const now = Date.now()
       const gap = now - this.lastTick
       if (gap > this.jsStallMs) this.jsStallMs = gap
       this.lastTick = now
     }, 16)
+  }
+
+  // A backgrounded batch (Ch8) parks between photos. The heartbeat stops — the
+  // OS throttling timers in the background would otherwise read as a giant
+  // fake "stall" — and the parked time is excluded from wall-clock seconds,
+  // so the reading stays a measure of the import, not of the pocket.
+  pause(nowMs: number): void {
+    if (this.timer) clearInterval(this.timer)
+    this.timer = null
+    this.pausedAt = nowMs
+  }
+
+  resume(nowMs: number): void {
+    this.pausedMs += nowMs - this.pausedAt
+    this.lastTick = nowMs
+    this.startHeartbeat()
   }
 
   recordInFlight(byteLen: number): void {
@@ -53,7 +75,7 @@ export class Meter {
 
   stop(nowMs: number): Reading {
     if (this.timer) clearInterval(this.timer)
-    const seconds = (nowMs - this.t0) / 1000
+    const seconds = (nowMs - this.t0 - this.pausedMs) / 1000
     return {
       photos: this.photos,
       bytes: this.bytes,

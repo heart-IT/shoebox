@@ -496,3 +496,26 @@ the worklet on every re-focus. `worker/lifecycle.js` + the install in
   outlives its window.
 - On-device verification (a real backgrounded worklet throwing on re-focus) is
   the chapter's device-soak territory, with the rest of Ch8.
+
+## Ch08 M3 — the import pump parks at the photo boundary (2026-07-21)
+
+The Part 2 deferral, closed at the app seam. A batch import backgrounded
+mid-run used to keep pumping: each iteration mmaps a file into an ArrayBuffer
+(the hand-rolled C++ HybridObject or the Nitro Kotlin `readBytes`) whose native
+region the OS can reclaim under background memory pressure while the JS side
+still holds views — the ownership rule from Ch2, now exercised by the
+lifecycle instead of the happy path.
+
+- **Park between photos, not mid-photo.** When AppState leaves `active`, the
+  pump finishes the photo in flight and parks at the boundary — the previous
+  region is dead, the next is unborn, and the worker has drained its own
+  in-flight tail (M1's SUSPEND contract). It resumes where it left off on
+  re-focus. The check→park sequence is atomic w.r.t. the AppState callback
+  (run-to-completion JS thread), so a waiter can't be stranded by a
+  background→active flip racing the park.
+- **The meter parks too.** Backgrounded timers get throttled, so the 16 ms
+  heartbeat gap would read back as a fake multi-second "stall", and parked
+  wall-clock would dilute throughput. `Meter.pause/resume` stops the heartbeat
+  and excludes parked time: the reading measures the import, not the pocket.
+- Device verification (background a 30-photo batch mid-run, re-focus, reading
+  sane, no reclaim crash) is the chapter's device-soak territory.

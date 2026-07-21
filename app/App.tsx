@@ -47,6 +47,13 @@ export default function App() {
   // (or tapping a second import mid-run) would interleave two batches into the
   // vault and stomp the meter/status. One import at a time.
   const busyRef = useRef(false)
+  // Mobile lifecycle (Ch8 M3): whether the app is foregrounded, and the batch
+  // loops parked on it. A backgrounded import pump must stop BETWEEN photos —
+  // each iteration holds an mmap'd ArrayBuffer whose native region the OS can
+  // reclaim under memory pressure while backgrounded; the photo boundary is
+  // the one point where no region is borrowed and no IPC frame is half-written.
+  const appActiveRef = useRef(true)
+  const foregroundWaitersRef = useRef<(() => void)[]>([])
 
   useEffect(() => {
     const worklet = new Worklet()
@@ -68,8 +75,15 @@ export default function App() {
     // Best-effort: a suspend/resume rejection must never crash the app. We only
     // act on 'background' (not the transient iOS 'inactive'), and 'active'.
     const sub = AppState.addEventListener('change', next => {
-      if (next === 'background') client.suspend().catch(() => {})
-      else if (next === 'active') client.resume().catch(() => {})
+      if (next === 'background') {
+        appActiveRef.current = false
+        client.suspend().catch(() => {})
+      } else if (next === 'active') {
+        appActiveRef.current = true
+        client.resume().catch(() => {})
+        // Wake any batch loop parked at a photo boundary.
+        for (const wake of foregroundWaitersRef.current.splice(0)) wake()
+      }
     })
 
     return () => {
@@ -193,6 +207,17 @@ export default function App() {
     let failures = 0
     try {
       for (const a of assets) {
+        // Park at the photo boundary while backgrounded (Ch8 M3): the previous
+        // photo's mmap'd region is dead, the next one isn't born yet, and the
+        // worker has drained its in-flight tail (SUSPEND replied). The meter
+        // pauses too, so the reading measures the import, not the pocket.
+        if (!appActiveRef.current) {
+          meter.pause(Date.now())
+          setStatus('import paused — backgrounded mid-batch')
+          await new Promise<void>(res => foregroundWaitersRef.current.push(res))
+          meter.resume(Date.now())
+          setStatus(`importing ${n} (${label})…`)
+        }
         if (!a.path) continue // skip assets with no readable path (iOS)
         try {
           // Per-photo isolation: one unreadable/corrupt file must not abort the
