@@ -42,4 +42,28 @@ function loadOrCreateSeed (fs, seedPath) {
   return seed
 }
 
-module.exports = { primaryKeyFromSeed, encryptionKeyFromSeed, loadOrCreateSeed }
+// A JOINED device persists the two keys it received through pairing — the library
+// key (which library to open) and the album key (how to decrypt it). Unlike the
+// founder, a joiner can't derive either from its seed: they're the founder's
+// secret, handed over once in the sealed pairing confirm. So a joiner writes them
+// beside its seed and reopens the vault as a member on every later boot instead of
+// re-founding an empty one. The device's writer identity (primaryKey → writer key)
+// still comes from the seed; only these two delivered keys need saving.
+//
+// 64 bytes on disk: libraryKey (32) || albumKey (32). Its mere presence is the
+// device's role — file exists → joiner, absent → founder.
+function saveMembership (fs, membershipPath, { libraryKey, albumKey }) {
+  fs.writeFileSync(membershipPath, b4a.concat([libraryKey, albumKey]))
+}
+
+function loadMembership (fs, membershipPath) {
+  try {
+    const buf = fs.readFileSync(membershipPath)
+    if (buf && buf.byteLength === 64) {
+      return { libraryKey: buf.subarray(0, 32), albumKey: buf.subarray(32, 64) }
+    }
+  } catch { /* no membership file — this device is a founder */ }
+  return null
+}
+
+module.exports = { primaryKeyFromSeed, encryptionKeyFromSeed, loadOrCreateSeed, saveMembership, loadMembership }

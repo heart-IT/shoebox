@@ -14,10 +14,14 @@ export interface ImportResult {
 // bare-rpc encodes the command as a uint — integers, not strings. Mirrors the
 // worker's CMD map exactly (worker/index.js). ERROR is a worker→app EVENT (the
 // worker emits it if boot fails), not a request.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10, JOIN: 11 }
 // A worklet that never replies (e.g. a boot hang) must not leave a promise
 // pending forever — every request is raced against this deadline.
 const RPC_TIMEOUT_MS = 20000
+// JOIN pairs over the DHT (peer discovery + handshake), which routinely outlasts a
+// local command — it gets a much longer deadline so a slow-but-succeeding pair
+// isn't killed as if the worker hung.
+const JOIN_TIMEOUT_MS = 90000
 
 export interface PhotoRecord {
   id: string // stable, unique — safe as a React list key
@@ -65,17 +69,17 @@ export class VaultClient {
   }
 
   // Race a reply against a deadline so a non-replying worklet can't hang forever.
-  private withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
+  private withTimeout<T>(p: Promise<T>, what: string, timeoutMs = RPC_TIMEOUT_MS): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`${what} timed out`)), RPC_TIMEOUT_MS)
+      const t = setTimeout(() => reject(new Error(`${what} timed out`)), timeoutMs)
       p.then((v) => { clearTimeout(t); resolve(v) }, (e) => { clearTimeout(t); reject(e) })
     })
   }
 
-  private async call(command: number, payload?: object): Promise<any> {
+  private async call(command: number, payload?: object, timeoutMs = RPC_TIMEOUT_MS): Promise<any> {
     const req = this.rpc.request(command)
     req.send(b4a.from(payload ? JSON.stringify(payload) : ''))
-    const res: Uint8Array = await this.withTimeout(req.reply(), `command ${command}`)
+    const res: Uint8Array = await this.withTimeout(req.reply(), `command ${command}`, timeoutMs)
     const out = JSON.parse(b4a.toString(res))
     if (out.error) throw new Error(out.error)
     return out
@@ -132,6 +136,14 @@ export class VaultClient {
   // <invite>` with on a laptop. That device joins as a writer, not a read peer.
   createInvite(): Promise<{ invite: string }> {
     return this.call(CMD.CREATE_INVITE)
+  }
+
+  // The OTHER side of createInvite: THIS phone joins an existing library with an
+  // invite. Blind-pairing runs in the worker; it receives the library + album keys,
+  // persists them, and reboots as a member. One-way — a device joins one library.
+  // JOIN pairs over the DHT, so it's given a longer deadline than the default.
+  join(invite: string): Promise<{ ok: boolean; libraryKey: string }> {
+    return this.call(CMD.JOIN, { invite }, JOIN_TIMEOUT_MS)
   }
 
   // The album roster: who's an owner, who's a member.

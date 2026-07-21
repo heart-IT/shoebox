@@ -427,4 +427,52 @@ class Vault {
   }
 }
 
-module.exports = { Vault, mimeFor, photoKey, writeUint64BE }
+// The CANDIDATE side of blind pairing — how a SECOND DEVICE joins an EXISTING
+// library (Ch7 M4). It's the mirror of the owner's createInvite(): open a
+// temporary swarm, prove we hold the invite, ship our writer key + box key up as
+// userData, and receive {library key, album key} back through the sealed confirm.
+// Those two keys are NOT seed-derivable — they're the founder's secret — so the
+// caller must persist them; then it boots a joiner Vault on the SAME store, whose
+// writer key is already the one the owner just admitted.
+//
+// Two-phase by necessity: you can't construct the Vault until pairing tells you
+// its bootstrap (the library key). So this owns just the handshake — a throwaway
+// store handle to read our writer key, a throwaway swarm to pair — and closes
+// both so the Vault can reopen the store cleanly.
+async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKeyPair = null, dhtBootstrap = null } = {}) {
+  const store = primaryKey
+    ? new Corestore(storagePath, { primaryKey, unsafe: true })
+    : new Corestore(storagePath)
+  // Our writer key BEFORE any Autobase exists — the same 'local' core the Vault's
+  // Autobase will adopt. Opened exclusive, so close it before the Vault reopens.
+  const local = Autobase.getLocalCore(store)
+  await local.ready()
+  const writerKey = b4a.from(local.key)
+  await local.close()
+  // userData = writerKey || boxKey, exactly what the owner's onadd splits back out:
+  // the writer key is the identity to admit; the box key is what future content
+  // keys get sealed to (Ch7 M3).
+  const userData = boxKeyPair ? b4a.concat([writerKey, boxKeyPair.publicKey]) : writerKey
+
+  const swarm = new Hyperswarm(dhtBootstrap ? { bootstrap: dhtBootstrap } : {})
+  const pairing = new BlindPairing(swarm, { poll: 500 })
+  let libraryKey = null
+  let encryptionKey = null
+  const candidate = pairing.addCandidate({
+    invite: z32.decode(invite), // z-base-32 of the ~66-byte invite (NOT a 32-byte key)
+    userData,
+    onadd: (result) => { libraryKey = result.key; encryptionKey = result.encryptionKey },
+  })
+  try {
+    await candidate.pairing
+  } finally {
+    // Release the temp swarm AND the store before the Vault reopens the same path.
+    await pairing.close().catch(() => {})
+    await swarm.destroy().catch(() => {})
+    await store.close().catch(() => {})
+  }
+  if (!libraryKey) throw new Error('pairing rejected by the library (bad or spent invite)')
+  return { libraryKey: b4a.from(libraryKey), encryptionKey: encryptionKey ? b4a.from(encryptionKey) : null }
+}
+
+module.exports = { Vault, pairAsCandidate, mimeFor, photoKey, writeUint64BE }

@@ -8,7 +8,8 @@
 
 const RPC = require('bare-rpc')
 const b4a = require('b4a')
-const { Vault } = require('./vault')
+const idEncoding = require('hypercore-id-encoding')
+const { Vault, pairAsCandidate } = require('./vault')
 const thumbnail = require('./thumbnail')
 
 // Eager ≤256px preview per import, generated in the worker (never the renderer).
@@ -26,9 +27,12 @@ async function withThumb (bytes, meta) {
 
 // bare-rpc encodes the command as a uint on the wire — commands are integers,
 // not strings. This map is the wire contract; the app mirrors it exactly.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11 }
 
 let vault = null
+// The device's boot context — seed-derived identity + paths — computed once in
+// main() and reused when a JOIN reboots the vault as a member (Ch7 M4).
+let ctx = null
 // Requests can arrive before the vault finishes opening; gate every command on
 // this instead of racing readiness. If boot FAILS, `ready` still resolves and
 // `bootError` is set, so handlers reply with an error instead of hanging forever.
@@ -110,6 +114,30 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         req.reply(json({ ok: true }))
         break
       }
+      case CMD.JOIN: {
+        // This device JOINS an existing library with an invite (the phone side of
+        // Ch7 M4 — the candidate half of createInvite). We tear down our own
+        // (empty, just-founded) vault, run the blind-pairing handshake to receive
+        // {libraryKey, albumKey}, persist them, and reboot as a member. The keys
+        // are the founder's secret — not seed-derivable — so persistence is what
+        // lets us reopen the album on later boots without re-pairing.
+        if (ctx.loadMembership(ctx.fs, ctx.membershipPath)) throw new Error('this device has already joined a library')
+        const { invite } = JSON.parse(b4a.toString(req.data))
+        if (!invite) throw new Error('join requires an invite code')
+        if (vault) { await vault.close(); vault = null } // release the store before pairing reopens it
+        let delivered
+        try {
+          delivered = await pairAsCandidate(ctx.vaultPath, { primaryKey: ctx.primaryKey, invite, boxKeyPair: ctx.boxKeyPair })
+          ctx.saveMembership(ctx.fs, ctx.membershipPath, { libraryKey: delivered.libraryKey, albumKey: delivered.encryptionKey })
+        } finally {
+          // Reboot into a LIVE vault no matter what: on success membership now
+          // exists so it comes up a MEMBER; on a pairing failure none was written
+          // so it comes back the FOUNDER — the worker is never left vault-less.
+          await bootVault()
+        }
+        req.reply(json({ ok: true, libraryKey: idEncoding.encode(delivered.libraryKey) }))
+        break
+      }
       default:
         req.reply(json({ error: `unknown command: ${req.command}` }))
     }
@@ -132,7 +160,7 @@ async function main () {
   const os = require('bare-os')
   const path = require('bare-path')
   const fs = require('bare-fs')
-  const { loadOrCreateSeed, primaryKeyFromSeed, encryptionKeyFromSeed } = require('./identity')
+  const { loadOrCreateSeed, primaryKeyFromSeed, encryptionKeyFromSeed, saveMembership, loadMembership } = require('./identity')
   const { memberBoxKeyFromSeed } = require('./rotation')
 
   const base = Bare.argv[0] || os.tmpdir()
@@ -141,12 +169,46 @@ async function main () {
   // encryption key. (A later chapter backs it up as a mnemonic and moves it into
   // the platform keychain; here it lives beside the vault.)
   const seed = loadOrCreateSeed(fs, path.join(base, 'shoebox-seed'))
-  vault = new Vault(path.join(base, 'shoebox-vault'), {
+  // Everything a boot (or a later JOIN reboot) needs, computed once. The founder's
+  // album key comes from the seed; a joiner's comes from disk (membership).
+  ctx = {
+    fs,
+    saveMembership,
+    loadMembership,
+    vaultPath: path.join(base, 'shoebox-vault'),
+    membershipPath: path.join(base, 'shoebox-membership'),
     primaryKey: primaryKeyFromSeed(seed),
-    encryptionKey: encryptionKeyFromSeed(seed),
+    founderAlbumKey: encryptionKeyFromSeed(seed),
     boxKeyPair: memberBoxKeyFromSeed(seed), // opens content keys sealed to us on rotation (Ch7 M3)
-  })
-  await vault.ready()
+  }
+  await bootVault()
+}
+
+// Open the vault in the right ROLE. A membership file (written when this device
+// joined someone else's library) means boot as a MEMBER — bootstrap onto that
+// library key and decrypt with the delivered album key. No membership means
+// FOUNDER — this device's own library, both keys derived from its seed. A member
+// shares immediately so it replicates in and its granted write access takes hold;
+// a founder shares lazily on its first import (unchanged).
+async function bootVault () {
+  const membership = ctx.loadMembership(ctx.fs, ctx.membershipPath)
+  if (membership) {
+    vault = new Vault(ctx.vaultPath, {
+      primaryKey: ctx.primaryKey,
+      bootstrap: idEncoding.encode(membership.libraryKey),
+      encryptionKey: b4a.from(membership.albumKey),
+      boxKeyPair: ctx.boxKeyPair,
+    })
+    await vault.ready()
+    await vault.share()
+  } else {
+    vault = new Vault(ctx.vaultPath, {
+      primaryKey: ctx.primaryKey,
+      encryptionKey: ctx.founderAlbumKey,
+      boxKeyPair: ctx.boxKeyPair,
+    })
+    await vault.ready()
+  }
 }
 
 // Close the vault on worklet teardown so the swarm, the blob-server socket, and

@@ -9,7 +9,7 @@ import os from 'os'
 import path from 'path'
 
 const require = createRequire(import.meta.url)
-const { Vault, writeUint64BE, photoKey } = require('../vault.js')
+const { Vault, pairAsCandidate, writeUint64BE, photoKey } = require('../vault.js')
 const c = require('compact-encoding')
 const b4a = require('b4a')
 const Corestore = require('corestore')
@@ -23,7 +23,7 @@ const idEncoding = require('hypercore-id-encoding')
 const crypto = require('hypercore-crypto')
 const { resolveStruct } = require('../spec')
 const { CMD, commandEncoding, openView, apply, roleOf } = require('../library')
-const { primaryKeyFromSeed } = require('../identity')
+const { primaryKeyFromSeed, saveMembership, loadMembership } = require('../identity')
 const { memberBoxKeyFromSeed } = require('../rotation')
 
 const PNG_1PX = Buffer.from(
@@ -395,4 +395,68 @@ rA[0].destroy(); rA[1].destroy(); rB[0].destroy(); rB[1].destroy()
 await memA.close(); await memB.close(); await rotFounder.close()
 for (const d of rotDirs) fs.rmSync(d, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke all verified')
+// Ch7 M4: A PHONE JOINS AS A SECOND DEVICE. The full joiner path the app runs.
+// pairAsCandidate() does the handshake (ships writerKey||boxKey, receives
+// {libraryKey, albumKey}); the delivered keys — which a joiner CANNOT derive from
+// its seed — persist to disk; a joiner Vault boots on that bootstrap + album key,
+// becomes writable, and syncs both ways. Then a simulated RESTART reopens the vault
+// from the persisted keys ALONE, proving a joined phone survives a reboot without
+// re-pairing (the gap X2 closed: no delivered-key persistence, no boot-as-joiner).
+const x2net = await createTestnet(3)
+const x2albumKey = crypto.randomBytes(32)
+const x2fDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-x2F-'))
+const x2Founder = new Vault(x2fDir, { encryptionKey: x2albumKey, boxKeyPair: memberBoxKeyFromSeed(crypto.randomBytes(32)), dhtBootstrap: x2net.bootstrap })
+await x2Founder.ready()
+await x2Founder.importPhoto(PNG_1PX, { name: 'founder.png', takenAt: 7000, thumb: 'THUMB-F' })
+const x2Invite = await x2Founder.createInvite()
+
+// The joiner device identity: one seed → primaryKey (writer identity) + box keypair.
+// The SAME primaryKey feeds pairAsCandidate AND the Vault, so the writer key the
+// owner admits during pairing is exactly the one the Vault later adopts.
+const x2seed = crypto.randomBytes(32)
+const x2primaryKey = primaryKeyFromSeed(x2seed)
+const x2box = memberBoxKeyFromSeed(x2seed)
+const x2jDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-x2J-'))
+const x2delivered = await pairAsCandidate(x2jDir, { primaryKey: x2primaryKey, invite: x2Invite, boxKeyPair: x2box, dhtBootstrap: x2net.bootstrap })
+assert.ok(b4a.equals(x2delivered.libraryKey, x2Founder.base.key), 'pairAsCandidate returns the library (bootstrap) key')
+assert.ok(b4a.equals(x2delivered.encryptionKey, x2albumKey), 'pairAsCandidate returns the album key through the sealed confirm')
+
+// Persist the delivered keys the way the worker does, then reload — the round-trip
+// the reboot stands on.
+const x2memPath = path.join(x2jDir, 'membership')
+saveMembership(fs, x2memPath, { libraryKey: x2delivered.libraryKey, albumKey: x2delivered.encryptionKey })
+const x2loaded = loadMembership(fs, x2memPath)
+assert.ok(x2loaded && b4a.equals(x2loaded.libraryKey, x2Founder.base.key) && b4a.equals(x2loaded.albumKey, x2albumKey), 'membership persists and reloads (library + album key)')
+
+// Boot the joiner Vault on the persisted keys — its writer key is already admitted.
+let x2Joiner = new Vault(x2jDir, { primaryKey: x2primaryKey, bootstrap: idEncoding.encode(x2loaded.libraryKey), encryptionKey: b4a.from(x2loaded.albumKey), boxKeyPair: x2box, dhtBootstrap: x2net.bootstrap })
+await x2Joiner.ready()
+await x2Joiner.share()
+assert.equal(await x2Joiner.isOwner(), false, 'the joined phone is a member, not the owner')
+let x2seen = null
+for (let i = 0; i < 800 && !(x2Joiner.base.writable && x2seen); i++) { await new Promise((res) => setTimeout(res, 25)); await x2Joiner.base.update(); x2seen = (await x2Joiner.list({ limit: 10 })).find((p) => p.name === 'founder.png') }
+assert.ok(x2Joiner.base.writable, 'the joined phone becomes a writer (ADD_WRITER replicated in)')
+assert.ok(x2seen && x2seen.thumb === 'THUMB-F', 'the joined phone reads the founder\'s ENCRYPTED photo with the delivered key')
+
+// The phone imports its own photo — the founder converges to it (two-way sync).
+await x2Joiner.importPhoto(PNG_1PX_RED, { name: 'phone.png', takenAt: 8000, thumb: 'THUMB-P' })
+let x2fSees = null
+for (let i = 0; i < 800 && !x2fSees; i++) { await new Promise((res) => setTimeout(res, 25)); await x2Founder.base.update(); await x2Joiner.base.update(); x2fSees = (await x2Founder.list({ limit: 10 })).find((p) => p.name === 'phone.png') }
+assert.equal(x2fSees && x2fSees.thumb, 'THUMB-P', 'the founder converges to the phone\'s photo')
+
+// RESTART: close the phone's vault, reopen from the persisted membership ALONE — no
+// invite, no re-pairing. It comes back a writer and still sees both photos.
+await x2Joiner.close()
+const x2reloaded = loadMembership(fs, x2memPath)
+x2Joiner = new Vault(x2jDir, { primaryKey: x2primaryKey, bootstrap: idEncoding.encode(x2reloaded.libraryKey), encryptionKey: b4a.from(x2reloaded.albumKey), boxKeyPair: x2box, dhtBootstrap: x2net.bootstrap })
+await x2Joiner.ready()
+await x2Joiner.share()
+let x2reboot = null
+for (let i = 0; i < 800 && !(x2Joiner.base.writable && x2reboot); i++) { await new Promise((res) => setTimeout(res, 25)); await x2Joiner.base.update(); x2reboot = (await x2Joiner.list({ limit: 10 })).find((p) => p.name === 'founder.png') }
+assert.ok(x2Joiner.base.writable, 'the phone is still a writer after a restart (identity from the seed, keys from disk)')
+const x2AfterReboot = (await x2Joiner.list({ limit: 10 })).map((p) => p.name).sort()
+assert.deepEqual(x2AfterReboot, ['founder.png', 'phone.png'], 'the phone reopens the album from persisted keys alone — both photos present, no re-pairing')
+await x2Joiner.close(); await x2Founder.close(); await x2net.destroy()
+fs.rmSync(x2fDir, { recursive: true, force: true }); fs.rmSync(x2jDir, { recursive: true, force: true })
+
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart all verified')

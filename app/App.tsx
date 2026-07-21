@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native'
 import { Worklet } from 'react-native-bare-kit'
@@ -38,6 +39,7 @@ export default function App() {
   const [readingLabel, setReadingLabel] = useState('')
   const [showGrid, setShowGrid] = useState(false)
   const [invite, setInvite] = useState<string | null>(null)
+  const [joinCode, setJoinCode] = useState('')
   const [showMembers, setShowMembers] = useState(false)
   const [members, setMembers] = useState<{ writerKey: string; role: string }[]>([])
   const clientRef = useRef<VaultClient | null>(null)
@@ -113,6 +115,24 @@ export default function App() {
       setStatus('invite ready — pair a laptop with join.mjs')
     } catch (e) {
       setStatus(`invite failed: ${String(e)}`)
+    }
+  }
+
+  // The OTHER side of "Invite a device": THIS phone joins an existing library with
+  // a pasted invite (Ch7 M4). The worker pairs over the DHT, receives the library +
+  // album keys, persists them, and reboots as a member — so this device now reads
+  // and writes the shared album. One-way: a device joins one library.
+  const joinLibrary = async () => {
+    const code = joinCode.trim()
+    if (!code) return setStatus('paste an invite code first')
+    setStatus('joining… (pairing over the DHT — up to a minute)')
+    try {
+      const res = await clientRef.current!.join(code)
+      setJoinCode('')
+      const s = await clientRef.current!.stat().catch(() => null)
+      setStatus(`joined ${res.libraryKey.slice(0, 12)}… — a member now${s ? `, ${s.photos} photo(s)` : ''}`)
+    } catch (e) {
+      setStatus(`join failed: ${String(e)}`)
     }
   }
 
@@ -276,6 +296,18 @@ export default function App() {
         <Button title="Show grid" onPress={() => setShowGrid(true)} />
         <Button title="Import one photo" onPress={importOne} />
         <Button title="Invite a device" onPress={inviteDevice} />
+        <View style={styles.joinBox}>
+          <TextInput
+            style={styles.input}
+            value={joinCode}
+            onChangeText={setJoinCode}
+            placeholder="paste an invite to join a library"
+            placeholderTextColor="#777"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Button title="Join a library" onPress={joinLibrary} />
+        </View>
         <Button title="Members" onPress={openMembers} />
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
@@ -352,4 +384,6 @@ const styles = StyleSheet.create({
   rollLine: { fontSize: 12, color: '#999', fontFamily: 'Menlo' },
   keyLabel: { fontSize: 12, color: '#aaa' },
   key: { fontSize: 12, fontFamily: 'Menlo', textAlign: 'center', color: '#8ab4f8' },
+  joinBox: { alignItems: 'center', gap: 6, paddingHorizontal: 24, alignSelf: 'stretch' },
+  input: { alignSelf: 'stretch', borderWidth: 1, borderColor: '#444', borderRadius: 6, color: '#eee', paddingHorizontal: 12, paddingVertical: 8, fontFamily: 'Menlo', fontSize: 12 },
 })
