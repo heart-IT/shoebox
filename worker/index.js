@@ -243,9 +243,15 @@ async function main () {
 // Open the vault in the right ROLE. A membership file (written when this device
 // joined someone else's library) means boot as a MEMBER — bootstrap onto that
 // library key and decrypt with the delivered album key. No membership means
-// FOUNDER — this device's own library, both keys derived from its seed. A member
-// shares immediately so it replicates in and its granted write access takes hold;
-// a founder shares lazily on its first import (unchanged).
+// FOUNDER — this device's own library, both keys derived from its seed.
+//
+// Audit AF-H7: BOTH roles share on boot. The founder used to share lazily (only
+// on its first import), so a rebooted founder sat at peers:0 with no replication
+// and no blind-mirror registration until it next imported — which the Ch10 sync
+// line then read as the very failure it exists to expose, and which stranded
+// other devices/members unable to sync from the founder. Sharing is idempotent
+// and the swarm suspends on background, so announcing on launch is the right
+// default. (share() is a no-op when there's nothing to announce to yet.)
 async function bootVault () {
   const membership = ctx.loadMembership(ctx.fs, ctx.membershipPath)
   if (membership) {
@@ -256,8 +262,6 @@ async function bootVault () {
       boxKeyPair: ctx.boxKeyPair,
       blindPeerKeys: ctx.blindPeerKeys,
     })
-    await vault.ready()
-    await vault.share()
   } else {
     vault = new Vault(ctx.vaultPath, {
       primaryKey: ctx.primaryKey,
@@ -265,8 +269,9 @@ async function bootVault () {
       boxKeyPair: ctx.boxKeyPair,
       blindPeerKeys: ctx.blindPeerKeys,
     })
-    await vault.ready()
   }
+  await vault.ready()
+  await vault.share()
 }
 
 // Close the vault on worklet teardown so the swarm, the blob-server socket, and

@@ -325,9 +325,14 @@ class Vault {
       }
     }
     // A first import can land WHILE the app is backgrounded (Ch8 M3): the swarm
-    // it just minted must come up suspended, not live, or the vault's suspended
-    // state and the actual sockets disagree until the next transition.
-    if (this.suspended) { await this.swarm.suspend(); return }
+    // it just minted must come up suspended, not live. Route that through the
+    // lifecycle queue (audit AF-L) so a concurrent resume() can't race this
+    // suspend to a half-live state — whichever runs last reconciles the swarm
+    // with the current `this.suspended`, so they can never disagree.
+    if (this.suspended) {
+      await this._transition(async () => { if (this.suspended && this.swarm) await this.swarm.suspend() })
+      return
+    }
     await this.swarm.flush().catch(() => {})
   }
 
@@ -706,7 +711,7 @@ class Vault {
       if (this.server) await this.server.resume()
       if (this.swarm) await this.swarm.resume()
       if (this.pairing) await this.pairing.resume()
-      if (this.blind) this.blind.resume() // needs the DHT back first
+      if (this.blind) await this.blind.resume() // needs the DHT back first; awaited (AF-L)
       this.suspended = false
     })
   }
@@ -719,7 +724,7 @@ class Vault {
       // rest: mirror client → pairing → swarm → autobase (releases its core
       // sessions) → blob-server, which owns the store we handed it and closes
       // it in its own _close().
-      if (this.blind) { try { this.blind.close() } catch { /* best effort */ } }
+      if (this.blind) { try { await this.blind.close() } catch { /* best effort — never let a mirror-teardown rejection escape (AF-L) */ } }
       if (this.pairing) await this.pairing.close().catch(() => {})
       if (this.swarm) await this.swarm.destroy().catch(() => {})
       if (this.base) await this.base.close().catch(() => {})

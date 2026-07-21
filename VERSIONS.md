@@ -694,3 +694,16 @@ the following. Fixes land in severity batches, each counterfactual-verified
   filter swallowing FOREGROUND socket errors indefinitely. SUSPEND now closes
   the window if the suspend fails, RESUME closes it in a `finally`, and the
   null-vault guard means a mid-JOIN SUSPEND never opens it in the first place.
+
+### Batch 3 — founder announce + lifecycle loose ends
+
+- **AF-H7 (HIGH, completeness):** a rebooted FOUNDER never re-announced —
+  `bootVault` called `share()` only in the member branch — so it sat at peers:0
+  with no replication and no blind-mirror registration until its next import,
+  which the Ch10 sync line then misread as failure and which stranded members
+  trying to sync from it. Both roles now `share()` on boot (idempotent; the
+  swarm suspends on background, so announcing on launch is the right default).
+- **AF-L (lifecycle):** `share()`'s "suspend the freshly-minted swarm" step now
+  runs INSIDE the transition queue, so a concurrent `resume()` can't race it to
+  a half-live state; `blind.resume()` and `blind.close()` are now awaited inside
+  the transition (an unawaited mirror-teardown rejection could crash Bare).
