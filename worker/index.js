@@ -51,6 +51,14 @@ const ready = new Promise((resolve) => { vaultReady = resolve })
 const rpc = new RPC(BareKit.IPC, async (req) => {
   await ready
   if (bootError) return req.reply(json({ error: 'worker failed to start: ' + bootError }))
+  // Audit AF-H2: during a JOIN reboot the vault is briefly null. Every command
+  // but JOIN needs it — reply with a clean, retryable error instead of throwing
+  // a TypeError, and crucially don't let a SUSPEND in this window run
+  // `suspension.onSuspend()` and then fail (which used to leave the exception
+  // filter's window stuck open in the foreground).
+  if (vault === null && req.command !== CMD.JOIN) {
+    return req.reply(json({ error: 'worker is busy joining a library — retry shortly' }))
+  }
   try {
     switch (req.command) {
       case CMD.STAT:
@@ -117,17 +125,31 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         break
       case CMD.SUSPEND:
         // Window opens BEFORE the teardown starts — the first dead-socket throw
-        // can arrive while suspend is still dropping connections.
+        // can arrive while suspend is still dropping connections. AF-M5: if the
+        // suspend itself fails, close the window again so the filter never
+        // outlives a real suspend/resume cycle (it used to stay open forever).
         suspension.onSuspend()
-        await vault.suspend()
-        req.reply(json({ ok: true }))
+        try {
+          await vault.suspend()
+          req.reply(json({ ok: true }))
+        } catch (err) {
+          suspension.onResume() // don't strand the window open on a failed suspend
+          req.reply(json({ error: String((err && err.stack) || err) }))
+        }
         break
       case CMD.RESUME:
-        await vault.resume()
-        // Closes settleMs from now, not immediately: the socket-corpse cleanup
-        // fires during and shortly AFTER resume, not neatly inside suspension.
-        suspension.onResume()
-        req.reply(json({ ok: true }))
+        // AF-M5: close the window in a finally — a resume that throws must still
+        // end the filter's window (settleMs from now), not leave it open.
+        try {
+          await vault.resume()
+          req.reply(json({ ok: true }))
+        } catch (err) {
+          req.reply(json({ error: String((err && err.stack) || err) }))
+        } finally {
+          // Closes settleMs from now, not immediately: the socket-corpse cleanup
+          // fires during and shortly AFTER resume, not neatly inside suspension.
+          suspension.onResume()
+        }
         break
       case CMD.CREATE_INVITE:
         // Pair a second device: returns a one-time invite code the candidate runs

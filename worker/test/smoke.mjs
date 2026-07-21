@@ -459,6 +459,23 @@ assert.ok(b4a.equals(m4opened, m4keyA), 'AF-M4: the FIRST rotation for an epoch 
 await m4.close()
 fs.rmSync(m4Dir, { recursive: true, force: true })
 
+// Audit AF-H2: pairAsCandidate is BOUNDED — when nobody answers the invite it
+// times out and cleans up, instead of polling forever (which, since the JOIN
+// handler tears down the live vault first, used to brick the worker until an
+// app restart). Craft an invite for a library key no one is announcing.
+const h2net = await createTestnet(3)
+const h2inv = z32.encode(BlindPairing.createInvite(crypto.randomBytes(32)).invite)
+const h2dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-h2-'))
+const h2t0 = Date.now()
+await assert.rejects(
+  () => pairAsCandidate(h2dir, { primaryKey: primaryKeyFromSeed(crypto.randomBytes(32)), invite: h2inv, boxKeyPair: memberBoxKeyFromSeed(crypto.randomBytes(32)), dhtBootstrap: h2net.bootstrap, timeoutMs: 2000 }),
+  /timed out/,
+  'AF-H2: pairing bounds itself and rejects when nobody answers (no forever-hang → no bricked worker)',
+)
+assert.ok(Date.now() - h2t0 < 20000, 'and it returns promptly, near its deadline')
+await h2net.destroy()
+fs.rmSync(h2dir, { recursive: true, force: true })
+
 // Ch7 M4: A PHONE JOINS AS A SECOND DEVICE. The full joiner path the app runs.
 // pairAsCandidate() does the handshake (ships writerKey||boxKey, receives
 // {libraryKey, albumKey}); the delivered keys — which a joiner CANNOT derive from

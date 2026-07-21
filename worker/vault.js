@@ -744,7 +744,7 @@ Vault.SUSPEND_DRAIN_MS = 5000
 // its bootstrap (the library key). So this owns just the handshake — a throwaway
 // store handle to read our writer key, a throwaway swarm to pair — and closes
 // both so the Vault can reopen the store cleanly.
-async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKeyPair = null, dhtBootstrap = null } = {}) {
+async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKeyPair = null, dhtBootstrap = null, timeoutMs = 75000 } = {}) {
   const store = primaryKey
     ? new Corestore(storagePath, { primaryKey, unsafe: true })
     : new Corestore(storagePath)
@@ -760,18 +760,38 @@ async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKey
   const userData = boxKeyPair ? b4a.concat([writerKey, boxKeyPair.publicKey]) : writerKey
 
   const swarm = new Hyperswarm(dhtBootstrap ? { bootstrap: dhtBootstrap } : {})
+  // Audit AF (P2P): a pairing-window peer reset (ECONNRESET/EPIPE) would
+  // otherwise surface as an unhandled 'error' and crash the worklet in the
+  // FOREGROUND, outside the suspend/resume filter. Swallow per-socket like the
+  // vault's own swarm does.
+  swarm.on('connection', (conn) => { conn.on('error', () => {}) })
   const pairing = new BlindPairing(swarm, { poll: 500 })
   let libraryKey = null
   let encryptionKey = null
+  let timer = null
   const candidate = pairing.addCandidate({
     invite: z32.decode(invite), // z-base-32 of the ~66-byte invite (NOT a 32-byte key)
     userData,
     onadd: (result) => { libraryKey = result.key; encryptionKey = result.encryptionKey },
   })
+  // On the timeout path, pairing.close() aborts candidate.pairing AFTER the race
+  // already settled on the timer — attach a terminal catch so that late
+  // rejection can never surface as an unhandled rejection (which crashes Bare).
+  candidate.pairing.catch(() => {})
   try {
-    await candidate.pairing
+    // Audit AF-H2: candidate.pairing polls FOREVER when the inviting device is
+    // offline or the invite is spent-but-not-denied. Bound it — the JOIN handler
+    // has already torn down the live vault, so an unbounded await here bricks the
+    // worker (every later RPC finds vault === null until app restart). On timeout
+    // the finally cleans up and we throw, so the caller's bootVault() recovers.
+    await Promise.race([
+      candidate.pairing,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('pairing timed out — the invite may be spent or the inviting device offline')), timeoutMs) }),
+    ])
   } finally {
+    if (timer) clearTimeout(timer)
     // Release the temp swarm AND the store before the Vault reopens the same path.
+    // pairing.close() also aborts a still-pending candidate on the timeout path.
     await pairing.close().catch(() => {})
     await swarm.destroy().catch(() => {})
     await store.close().catch(() => {})

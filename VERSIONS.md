@@ -673,3 +673,24 @@ the following. Fixes land in severity batches, each counterfactual-verified
   classify post-kick photos, contradicting the "name and time only" boundary.
   Both fields are now content-encrypted under the epoch key alongside the
   thumbnail (`_encStr`/`_encBuf`, decrypted in `decorate`). Smoke: `AF-M8`.
+
+### Batch 2 — JOIN robustness
+
+- **AF-H2 (HIGH, correctness/P2P/production):** JOIN closes the live vault, then
+  `await candidate.pairing` — which polls FOREVER when the inviting device is
+  offline or the invite is spent-but-not-denied. The `finally { bootVault() }`
+  never ran, leaving the worker with `vault === null` and every later RPC
+  erroring until an app restart. `pairAsCandidate` now bounds pairing with a
+  75 s timeout (races the pending pairing, cleans up, throws → the caller's
+  `bootVault()` recovers as founder). A terminal `.catch` on the aborted
+  candidate prevents a late unhandled rejection (crashes Bare). Every RPC but
+  JOIN now short-circuits with a clean "busy joining" reply while the vault is
+  briefly null. The candidate swarm also gets a per-socket error handler (a
+  pairing-window ECONNRESET used to crash the foreground worklet). Smoke:
+  `AF-H2` (bounded reject, prompt return).
+- **AF-M5 (MEDIUM, production):** the suspend→resume exception-filter window
+  could stick OPEN — `onResume` ran only after a successful `vault.resume()`, so
+  a throwing resume (or a SUSPEND during the null-vault JOIN window) left the
+  filter swallowing FOREGROUND socket errors indefinitely. SUSPEND now closes
+  the window if the suspend fails, RESUME closes it in a `finally`, and the
+  null-vault guard means a mid-JOIN SUSPEND never opens it in the first place.
