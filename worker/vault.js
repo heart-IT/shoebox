@@ -272,13 +272,18 @@ class Vault {
   async ensureCount () {
     if (this._count !== null) return this._count
     if (!this._counting) {
-      this._counting = (async () => {
+      const scan = (async () => {
         await this.base.update()
         let n = 0
         for await (const _ of this.view.createReadStream()) n++ // eslint-disable-line no-unused-vars
-        this._count = n
+        // Audit AF-M6: publish only if THIS scan is still the current one. An
+        // import (or replicated update) that lands mid-scan nulls `_counting`;
+        // without this guard the stale snapshot would overwrite `_count` and
+        // under-report until the next view advance.
+        if (this._counting === scan) this._count = n
         return n
       })()
+      this._counting = scan
     }
     return this._counting
   }
@@ -499,12 +504,17 @@ class Vault {
       byCore.get(hex).push(r)
     }
     for (const [hex, recs] of byCore) {
+      // Audit AF-M11: ready() is INSIDE the try, so a ready()/has() failure on a
+      // corrupt or forged core still closes the session (it used to leak one
+      // session per failing core, repeating on every residency scan).
       const core = this.store.get({ key: b4a.from(hex, 'hex') })
-      await core.ready()
       try {
+        await core.ready()
         for (const r of recs) r.resident = await core.has(r.blockOffset, r.blockOffset + r.blockLength)
+      } catch {
+        for (const r of recs) r.resident = false // unreadable core → honestly cold
       } finally {
-        await core.close()
+        await core.close().catch(() => {})
       }
     }
   }
@@ -517,18 +527,20 @@ class Vault {
     let evicted = 0
     let freedBytes = 0
     for (const idHex of ids) {
+      if (!/^[0-9a-fA-F]+$/.test(String(idHex))) continue // AF-M9: ignore non-hex ids
       const node = await this.view.get(b4a.from(idHex, 'hex'))
       if (!node) continue
       const r = node.value
+      // AF-M11: ready() inside the try so a throw still closes the session.
       const core = this.store.get({ key: r.blobsCoreKey })
-      await core.ready()
       try {
+        await core.ready()
         if (!(await core.has(r.blockOffset, r.blockOffset + r.blockLength))) continue
         await core.clear(r.blockOffset, r.blockOffset + r.blockLength)
         evicted++
         freedBytes += r.byteLength
-      } finally {
-        await core.close()
+      } catch { /* unreadable core — skip, don't leak */ } finally {
+        await core.close().catch(() => {})
       }
     }
     return { evicted, freedBytes }
@@ -537,11 +549,16 @@ class Vault {
   // The two tiers in numbers: how much of the library's original bytes are
   // local (hot) vs evicted/never-fetched (cold). The index itself is small and
   // always local — it's not what fills a 64 GB phone.
+  //
+  // Audit AF-H8: this streams a MINIMAL projection (blob coordinates + byteLength
+  // only), never `{ ...value }` with its ~20-30 KB thumbnail and ~4 KB embedding
+  // per record. On a 10k+ library the old copy spiked the worklet by hundreds of
+  // MB and blew the RPC timeout; the lean shape is a few tens of bytes per photo.
   async storageStat () {
     await this.base.update()
     const recs = []
-    for await (const { key, value } of this.view.createReadStream()) {
-      recs.push({ ...value, id: b4a.toString(key, 'hex') })
+    for await (const { value } of this.view.createReadStream()) {
+      recs.push({ blobsCoreKey: value.blobsCoreKey, blockOffset: value.blockOffset, blockLength: value.blockLength, byteLength: value.byteLength })
     }
     await this._markResidency(recs)
     let totalBytes = 0
@@ -557,23 +574,65 @@ class Vault {
   // a photo whose dHash sits within the grid's own NEAR_DUP threshold of an
   // earlier photo is the cheapest thing to lose — then oldest-first. Returns
   // resident record ids until `bytes` worth of originals are covered.
-  async evictionCandidates ({ bytes = 0 } = {}) {
+  //
+  // Audit AF-H8: streams oldest-first and STOPS as soon as `bytes` worth of
+  // candidates are collected — it does NOT load the whole library, decrypt every
+  // thumbnail (the old `list({limit:1000})` did both), or scan past what it
+  // needs. Near-dup detection compares against a bounded sliding window of recent
+  // unique hashes (bursts are temporally clustered, so this catches them at
+  // O(n·window) instead of O(n²)). dHash is content-encrypted (AF-M8), so decrypt
+  // just that one field per record.
+  async evictionCandidates ({ bytes = 0, maxScan = 20000 } = {}) {
     if (!bytes) return []
-    const recs = (await this.list({ limit: 1000, reverse: false, residency: true })).filter((r) => r.resident)
+    await this._syncContentKeys()
+    const NEAR_DUP_WINDOW = 256 // recent unique hashes compared against (bounds cost)
     const seen = []
-    const dupIds = new Set()
-    for (const r of recs) {
-      if (!r.dhash || r.dhash === DEGENERATE_DHASH) continue
-      if (seen.some((s) => hammingHex(s, r.dhash) <= NEAR_DUP_HAMMING)) dupIds.add(r.id)
-      else seen.push(r.dhash)
+    const dups = [] // {id, byteLength} — near-duplicates, evicted first
+    const rest = [] // {id, byteLength} — everything else, oldest-first
+    // Blob cores are shared (photo-blobs per epoch), so cache handles across the
+    // scan instead of open/closing per record; closed once at the end.
+    const cores = new Map()
+    const coreFor = async (coreKey) => {
+      const hex = b4a.toString(coreKey, 'hex')
+      if (cores.has(hex)) return cores.get(hex)
+      const core = this.store.get({ key: coreKey })
+      cores.set(hex, core)
+      try { await core.ready() } catch { /* unreadable → treated as cold below */ }
+      return core
     }
-    const ordered = [...recs.filter((r) => dupIds.has(r.id)), ...recs.filter((r) => !dupIds.has(r.id))]
+    let scanned = 0
+    let truncated = false
+    try {
+      // Oldest-first (reverse:false). BOUNDED by maxScan records — not by bytes:
+      // near-duplicates are preferred wherever they sit, so we must keep scanning
+      // to find them. No thumbnails are decrypted (only the one dHash field), and
+      // residency reuses cached core handles.
+      for await (const { key, value } of this.view.createReadStream({ reverse: false })) {
+        if (++scanned > maxScan) { truncated = true; break }
+        const core = await coreFor(value.blobsCoreKey)
+        let resident = false
+        try { resident = await core.has(value.blockOffset, value.blockOffset + value.blockLength) } catch { /* cold */ }
+        if (!resident) continue
+        const item = { id: b4a.toString(key, 'hex'), byteLength: value.byteLength }
+        const dhash = this._decStr(value.dhash, value.epoch)
+        let isDup = false
+        if (dhash && dhash !== DEGENERATE_DHASH) {
+          if (seen.some((s) => hammingHex(s, dhash) <= NEAR_DUP_HAMMING)) isDup = true
+          else { seen.push(dhash); if (seen.length > NEAR_DUP_WINDOW) seen.shift() }
+        }
+        ;(isDup ? dups : rest).push(item)
+      }
+    } finally {
+      for (const core of cores.values()) await core.close().catch(() => {})
+    }
+    if (truncated) console.error(`evictionCandidates: scan capped at ${maxScan} records — evicting a partial set`)
+    // Near-duplicates first, then oldest-of-the-rest, until `bytes` is covered.
     const out = []
-    let covered = 0
-    for (const r of ordered) {
-      if (covered >= bytes) break
+    let acc = 0
+    for (const r of [...dups, ...rest]) {
+      if (acc >= bytes) break
       out.push(r.id)
-      covered += r.byteLength
+      acc += r.byteLength
     }
     return out
   }

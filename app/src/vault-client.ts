@@ -22,6 +22,9 @@ const RPC_TIMEOUT_MS = 20000
 // local command — it gets a much longer deadline so a slow-but-succeeding pair
 // isn't killed as if the worker hung.
 const JOIN_TIMEOUT_MS = 90000
+// Storage scans (residency, the eviction oracle) walk the whole library; on a
+// large one they outlast the default deadline but are still bounded work.
+const STORAGE_TIMEOUT_MS = 60000
 
 export interface PhotoRecord {
   id: string // stable, unique — safe as a React list key
@@ -126,14 +129,15 @@ export class VaultClient {
   // Ch9: evict originals — explicit ids, or let the worker's oracle pick
   // near-duplicates-then-oldest until `bytes` worth of originals are covered.
   // The index (thumbnails, search) is untouched; cold originals re-fetch from
-  // peers on tap.
+  // peers on tap. Scans the library, so it gets the longer storage deadline.
   evict(opts: { ids?: string[]; bytes?: number }): Promise<{ evicted: number; freedBytes: number }> {
-    return this.call(CMD.EVICT, opts)
+    return this.call(CMD.EVICT, opts, STORAGE_TIMEOUT_MS)
   }
 
-  // Ch9: the two tiers in numbers — hot (local) vs cold original bytes.
+  // Ch9: the two tiers in numbers — hot (local) vs cold original bytes. A full
+  // residency scan on a large library outlasts the default deadline.
   storageStat(): Promise<{ photos: number; totalBytes: number; localBytes: number; coldBytes: number }> {
-    return this.call(CMD.STORAGE_STAT)
+    return this.call(CMD.STORAGE_STAT, undefined, STORAGE_TIMEOUT_MS)
   }
 
   // Mobile lifecycle: the host forwards OS background/foreground here so the

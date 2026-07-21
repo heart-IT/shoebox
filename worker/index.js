@@ -38,6 +38,11 @@ async function withThumb (bytes, meta) {
 const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11, EVICT: 12, STORAGE_STAT: 13 }
 
 let vault = null
+// Audit AF-M9: RPC input bounds. The app is the only client, but it's still the
+// trust boundary — a buggy release must not OOM or wedge the worker.
+const MAX_PAYLOAD_BYTES = 32 * 1024 * 1024 // caps a pathological frame; a real photo (base64) stays well under
+const MAX_INFLIGHT = 32 // concurrent handlers; excess is rejected, not queued unboundedly
+let inflight = 0
 // The device's boot context — seed-derived identity + paths — computed once in
 // main() and reused when a JOIN reboots the vault as a member (Ch7 M4).
 let ctx = null
@@ -51,6 +56,14 @@ const ready = new Promise((resolve) => { vaultReady = resolve })
 const rpc = new RPC(BareKit.IPC, async (req) => {
   await ready
   if (bootError) return req.reply(json({ error: 'worker failed to start: ' + bootError }))
+  // AF-M9: reject oversized frames and back-pressure a request flood before any
+  // work (or memory) is spent on them.
+  if (req.data && req.data.byteLength > MAX_PAYLOAD_BYTES) {
+    return req.reply(json({ error: 'payload too large' }))
+  }
+  if (inflight >= MAX_INFLIGHT) {
+    return req.reply(json({ error: 'worker busy — too many in-flight requests' }))
+  }
   // Audit AF-H2: during a JOIN reboot the vault is briefly null. Every command
   // but JOIN needs it — reply with a clean, retryable error instead of throwing
   // a TypeError, and crucially don't let a SUSPEND in this window run
@@ -59,6 +72,7 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
   if (vault === null && req.command !== CMD.JOIN) {
     return req.reply(json({ error: 'worker is busy joining a library — retry shortly' }))
   }
+  inflight++
   try {
     switch (req.command) {
       case CMD.STAT:
@@ -115,8 +129,10 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
       case CMD.EVICT: {
         // Evict originals (Ch9 M1): explicit ids, or let the oracle pick
         // near-duplicates-then-oldest until `bytes` worth are covered.
+        // AF-M9: `ids` must be an ARRAY — a bare string would iterate per char
+        // in evict() and clear whatever those single-char "ids" happened to hit.
         const { ids, bytes } = req.data && req.data.byteLength ? JSON.parse(b4a.toString(req.data)) : {}
-        const targets = ids && ids.length ? ids : await vault.evictionCandidates({ bytes: bytes || 0 })
+        const targets = Array.isArray(ids) && ids.length ? ids : await vault.evictionCandidates({ bytes: Number(bytes) || 0 })
         req.reply(json(await vault.evict(targets)))
         break
       }
@@ -194,6 +210,8 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
     }
   } catch (err) {
     req.reply(json({ error: String((err && err.stack) || err) }))
+  } finally {
+    inflight-- // AF-M9: release the in-flight slot on every path
   }
 })
 

@@ -707,3 +707,26 @@ the following. Fixes land in severity batches, each counterfactual-verified
   runs INSIDE the transition queue, so a concurrent `resume()` can't race it to
   a half-live state; `blind.resume()` and `blind.close()` are now awaited inside
   the transition (an unawaited mirror-teardown rejection could crash Bare).
+
+### Batch 4 — storage bounds, session leaks, count race, RPC hardening
+
+- **AF-H8 (HIGH, production):** `storageStat()` materialized every record
+  (`{ ...value }` with its ~20-30 KB thumbnail + embedding) into one array, and
+  the eviction oracle loaded 1000 fully-decorated records with an O(n²) Hamming
+  pass — spiking the worklet and blowing the RPC timeout on a large library.
+  `storageStat` now streams a minimal projection (blob coordinates + byteLength);
+  `evictionCandidates` streams oldest-first, decrypts only the one dHash field,
+  compares against a bounded 256-hash window (O(n·window)), caches shared blob
+  cores across the scan, and is capped at `maxScan` (logs when hit). EVICT and
+  STORAGE_STAT get a 60 s client deadline.
+- **AF-M6 (MEDIUM, correctness):** a count scan finishing AFTER a mid-scan
+  invalidation used to re-poison `_count` with a stale snapshot; `ensureCount`
+  now publishes only if its scan is still current (`this._counting === scan`).
+- **AF-M9 (MEDIUM, production):** RPC input bounds — a 32 MB payload cap and a
+  32-deep in-flight cap (excess rejected, not queued), `EVICT` ids must be an
+  ARRAY (a bare string used to iterate per character), and `evict()` skips
+  non-hex ids. `removeMember` already length-checks its hex (AF-M4). Smoke:
+  `AF-M9`.
+- **AF-M11 (MEDIUM, production):** `core.ready()` moved INSIDE the try in
+  `_markResidency`/`evict` (and the oracle scan), so a ready/has failure on a
+  corrupt or forged core closes the session instead of leaking one per scan.

@@ -1012,6 +1012,12 @@ assert.deepEqual(orOne, [orId('dupB.png')], 'the oracle evicts the near-duplicat
 const orAll = await orVault.evictionCandidates({ bytes: 1e9 })
 assert.deepEqual(orAll, [orId('dupB.png'), orId('keeper.png'), orId('dupA.png')], 'then oldest-first for the rest')
 assert.deepEqual(await orVault.evictionCandidates({}), [], 'no byte target → no candidates (eviction is never implicit)')
+// Audit AF-M9: evict() ignores non-hex ids (a stray/garbage id can't clear a
+// wrong blob), and only evicts the valid ones.
+const orValid = orId('dupA.png')
+const orEv = await orVault.evict(['not-a-hex-id', '', orValid])
+assert.equal(orEv.evicted, 1, 'AF-M9: evict skips non-hex ids and clears only the one valid record')
+assert.equal(orEv.freedBytes, PNG_1PX.byteLength, 'and reports the freed bytes of that record')
 await orVault.close()
 fs.rmSync(orDir, { recursive: true, force: true })
 
