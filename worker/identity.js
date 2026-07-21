@@ -93,4 +93,17 @@ function loadMembership (fs, membershipPath) {
   return { libraryKey: buf.subarray(0, 32), albumKey: buf.subarray(32, 64) }
 }
 
-module.exports = { primaryKeyFromSeed, encryptionKeyFromSeed, loadOrCreateSeed, saveMembership, loadMembership }
+// Blind-mirror keys (AF-M2), one z32 per line, atomic + owner-only like the
+// rest. A corrupt/garbled mirror file is NON-fatal — mirrors are re-addable, so
+// unreadable lines are simply skipped (the caller validates each z32).
+function loadMirrors (fs, mirrorPath) {
+  const buf = readIfExists(fs, mirrorPath)
+  if (!buf) return []
+  return b4a.toString(buf, 'utf-8').split('\n').map((s) => s.trim()).filter(Boolean)
+}
+
+function saveMirrors (fs, mirrorPath, z32keys) {
+  writeFileAtomic(fs, mirrorPath, b4a.from(z32keys.join('\n'), 'utf-8'))
+}
+
+module.exports = { primaryKeyFromSeed, encryptionKeyFromSeed, loadOrCreateSeed, saveMembership, loadMembership, loadMirrors, saveMirrors }

@@ -751,3 +751,22 @@ the following. Fixes land in severity batches, each counterfactual-verified
   (iOS Keychain / Android Keystore) for the seed and a 24-word mnemonic backup
   — remains native work (a documented future chapter), and stays a ship-blocker
   for the "data collected: none" claim until done.
+
+### Batch 6 — app reachability + observability
+
+- **AF-M2 (HIGH, completeness):** the blind mirror — the Ch9 centerpiece and
+  flow 3 of Part 10's privacy narrative — was unreachable from the phone: the
+  worker only read a mirror key from `Bare.argv[1]`, which `App.tsx` never
+  supplied. Now `Vault.addMirror()` registers a mirror at RUNTIME (creates the
+  client if `share()` already ran, feeds it existing connections, registers the
+  autobase + blob cores); a `SET_MIRROR` RPC persists the key (merged with the
+  boot arg on every launch); the app has a "Set mirror" input; and STAT reports
+  the configured count. Smoke: `AF-M2` (runtime-added mirror absorbs, idempotent).
+- **AF-M1 (HIGH, completeness):** "Evict originals" was a data-loss button in
+  the app's only reachable config — with no mirror and no peer, it cleared the
+  sole copy while the caption promised "re-fetch on tap". Eviction now REFUSES
+  when no holder exists (mirrors 0 AND peers 0) and always confirms.
+- **AF-M13 (MEDIUM, production):** the sync line froze at a stale value when the
+  worker died/hung; a failed STAT poll now flags "⚠ worker not responding".
+- **AF-L:** `joinLibrary`/`inviteDevice` now honor the `busyRef` reentrancy
+  guard (a Join mid-import used to close the vault under the running pump).

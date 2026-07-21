@@ -35,7 +35,7 @@ async function withThumb (bytes, meta) {
 
 // bare-rpc encodes the command as a uint on the wire — commands are integers,
 // not strings. This map is the wire contract; the app mirrors it exactly.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11, EVICT: 12, STORAGE_STAT: 13 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11, EVICT: 12, STORAGE_STAT: 13, SET_MIRROR: 14 }
 
 let vault = null
 // Audit AF-M9: RPC input bounds. The app is the only client, but it's still the
@@ -175,6 +175,18 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
       case CMD.LIST_MEMBERS:
         req.reply(json({ members: await vault.members() }))
         break
+      case CMD.SET_MIRROR: {
+        // AF-M2: configure an always-on blind mirror at runtime (the app's
+        // Settings). Validate the z32 key, register it live, and persist it so
+        // it's picked up on every later boot.
+        const { key } = JSON.parse(b4a.toString(req.data))
+        idEncoding.decode(key) // throws on a malformed key → caught below
+        await vault.addMirror(key)
+        const cur = ctx.loadMirrors(ctx.fs, ctx.mirrorPath)
+        if (!cur.includes(key)) ctx.saveMirrors(ctx.fs, ctx.mirrorPath, [...cur, key])
+        req.reply(json({ mirrors: vault.mirrorKeys() }))
+        break
+      }
       case CMD.REMOVE_MEMBER: {
         const { writerKey } = JSON.parse(b4a.toString(req.data))
         await vault.removeMember(writerKey)
@@ -229,14 +241,18 @@ async function main () {
   const os = require('bare-os')
   const path = require('bare-path')
   const fs = require('bare-fs')
-  const { loadOrCreateSeed, primaryKeyFromSeed, encryptionKeyFromSeed, saveMembership, loadMembership } = require('./identity')
+  const { loadOrCreateSeed, primaryKeyFromSeed, encryptionKeyFromSeed, saveMembership, loadMembership, loadMirrors, saveMirrors } = require('./identity')
   const { memberBoxKeyFromSeed } = require('./rotation')
 
   const base = Bare.argv[0] || os.tmpdir()
   // Optional second arg: the z32 key of a self-run blind peer (Ch9 M2) — the
   // always-on box that mirrors this library as ciphertext. No key, no mirror;
-  // availability is then only as good as the other devices' uptime.
+  // availability is then only as good as the other devices' uptime. AF-M2: this
+  // is merged with any mirrors configured at runtime (persisted in the mirror
+  // file), so the app's Settings flow — not just the boot arg — can add one.
   const blindPeerArg = Bare.argv[1] || null
+  const mirrorPath = path.join(base, 'shoebox-mirrors')
+  const bootMirrorZ = [...new Set([...(blindPeerArg ? [blindPeerArg] : []), ...loadMirrors(fs, mirrorPath)])]
   // The device identity seed — minted once, persisted, the root every core
   // descends from. It seeds both the device's keys (primaryKey) and the album's
   // encryption key. (A later chapter backs it up as a mnemonic and moves it into
@@ -248,12 +264,15 @@ async function main () {
     fs,
     saveMembership,
     loadMembership,
+    loadMirrors,
+    saveMirrors,
+    mirrorPath,
     vaultPath: path.join(base, 'shoebox-vault'),
     membershipPath: path.join(base, 'shoebox-membership'),
     primaryKey: primaryKeyFromSeed(seed),
     founderAlbumKey: encryptionKeyFromSeed(seed),
     boxKeyPair: memberBoxKeyFromSeed(seed), // opens content keys sealed to us on rotation (Ch7 M3)
-    blindPeerKeys: blindPeerArg ? [idEncoding.decode(blindPeerArg)] : null,
+    blindPeerKeys: bootMirrorZ.length ? bootMirrorZ.map((z) => idEncoding.decode(z)) : null,
   }
   await bootVault()
 }

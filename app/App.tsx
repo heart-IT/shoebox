@@ -45,7 +45,11 @@ export default function App() {
   const [storage, setStorage] = useState<{ photos: number; totalBytes: number; localBytes: number; coldBytes: number } | null>(null)
   // Sync health (Ch10): silent failures become a visible line. Refreshed on a
   // slow interval — this is a status readout, not a measurement.
-  const [sync, setSync] = useState<{ peers: number; suspended: boolean; lastUpdateAt: number } | null>(null)
+  const [sync, setSync] = useState<{ peers: number; suspended: boolean; lastUpdateAt: number; mirrors: number } | null>(null)
+  // AF-M13: whether the last STAT poll actually answered — a dead/hung worker
+  // must not leave the sync line frozen at a stale-but-reassuring value.
+  const [syncFresh, setSyncFresh] = useState(true)
+  const [mirrorKey, setMirrorKey] = useState('')
   const clientRef = useRef<VaultClient | null>(null)
   // Reentrancy guard: import buttons don't disable themselves, so a double-tap
   // (or tapping a second import mid-run) would interleave two batches into the
@@ -76,16 +80,19 @@ export default function App() {
     const client = new VaultClient(worklet.IPC, msg => setStatus(`worker error: ${msg}`))
     clientRef.current = client
 
-    const takeStat = (s: { photos: number; peers: number; suspended: boolean; lastUpdateAt: number }) =>
-      setSync({ peers: s.peers, suspended: s.suspended, lastUpdateAt: s.lastUpdateAt })
+    const takeStat = (s: { photos: number; peers: number; suspended: boolean; lastUpdateAt: number; mirrors: number }) => {
+      setSync({ peers: s.peers, suspended: s.suspended, lastUpdateAt: s.lastUpdateAt, mirrors: s.mirrors })
+      setSyncFresh(true)
+    }
     client
       .stat()
       .then(s => { if (!ephemeral) setStatus(`vault ready — ${s.photos} photo(s)`); takeStat(s) })
       .catch(e => setStatus(`worker error: ${String(e)}`))
     // A resume that reconnects nobody, or a view that stopped advancing, must
-    // not be a secret — poll the cheap STAT and keep the sync line honest.
+    // not be a secret — poll the cheap STAT and keep the sync line honest. A
+    // poll that fails (dead/hung worker) marks the line stale (AF-M13).
     const syncTimer = setInterval(() => {
-      clientRef.current?.stat().then(takeStat).catch(() => {})
+      clientRef.current?.stat().then(takeStat).catch(() => setSyncFresh(false))
     }, 10000)
 
     // Forward the OS lifecycle to the worklet. On background, suspend the swarm
@@ -142,6 +149,8 @@ export default function App() {
   // Invite a second device to join as a WRITER. The code is one-time; the laptop
   // runs `node join.mjs <invite>` and, once added, can import into this library.
   const inviteDevice = async () => {
+    if (busyRef.current) return // AF-L: don't race a running import/join
+    busyRef.current = true
     setStatus('creating invite…')
     try {
       const res = await clientRef.current!.createInvite()
@@ -149,6 +158,8 @@ export default function App() {
       setStatus('invite ready — pair a laptop with join.mjs')
     } catch (e) {
       setStatus(`invite failed: ${String(e)}`)
+    } finally {
+      busyRef.current = false
     }
   }
 
@@ -159,6 +170,8 @@ export default function App() {
   const joinLibrary = async () => {
     const code = joinCode.trim()
     if (!code) return setStatus('paste an invite code first')
+    if (busyRef.current) return // AF-L: JOIN closes the vault — never mid-import
+    busyRef.current = true
     setStatus('joining… (pairing over the DHT — up to a minute)')
     try {
       const res = await clientRef.current!.join(code)
@@ -167,6 +180,8 @@ export default function App() {
       setStatus(`joined ${res.libraryKey.slice(0, 12)}… — a member now${s ? `, ${s.photos} photo(s)` : ''}`)
     } catch (e) {
       setStatus(`join failed: ${String(e)}`)
+    } finally {
+      busyRef.current = false
     }
   }
 
@@ -217,7 +232,7 @@ export default function App() {
   // Evict every locally-held original. The library does not shrink — records,
   // thumbnails, and search stay; the full-resolution bytes come back on tap
   // from whichever peer holds them (the grid marks cold photos with ❄).
-  const evictOriginals = async () => {
+  const runEvict = async () => {
     if (busyRef.current) return
     busyRef.current = true
     setStatus('evicting originals…')
@@ -230,6 +245,44 @@ export default function App() {
       setStatus(`evict failed: ${String(e)}`)
     } finally {
       busyRef.current = false
+    }
+  }
+
+  // AF-M1: evicting the sole copy of an original is unrecoverable. Refuse when
+  // nothing else holds the bytes (no mirror configured AND no connected peer),
+  // and always confirm — the caption used to promise "re-fetch on tap" even
+  // when nothing could serve the re-fetch.
+  const evictOriginals = () => {
+    const hasHolder = (sync?.mirrors ?? 0) > 0 || (sync?.peers ?? 0) > 0
+    if (!hasHolder) {
+      return Alert.alert(
+        'No backup holder',
+        'No mirror is configured and no peer is connected. Evicting now would delete the only copy of these originals — they could not be re-fetched. Set a mirror or connect a device first.',
+        [{ text: 'OK' }],
+      )
+    }
+    Alert.alert(
+      'Evict originals?',
+      'Full-resolution originals will be removed from this phone and re-fetched from a peer or mirror when you tap a photo. Thumbnails and search stay.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Evict', style: 'destructive', onPress: runEvict },
+      ],
+    )
+  }
+
+  // AF-M2: point the library at an always-on blind mirror (a z32 key from your
+  // own `blind-peer` box). Persisted in the worker; re-registered every boot.
+  const configureMirror = async () => {
+    const key = mirrorKey.trim()
+    if (!key) return setStatus('paste a blind-peer key first')
+    setStatus('registering mirror…')
+    try {
+      const res = await clientRef.current!.setMirror(key)
+      setMirrorKey('')
+      setStatus(`mirror registered — ${res.mirrors.length} configured`)
+    } catch (e) {
+      setStatus(`mirror failed: ${String(e)}`)
     }
   }
 
@@ -370,10 +423,12 @@ export default function App() {
         {sync && (
           <Text style={styles.syncLine}>
             {sync.suspended ? 'suspended' : `${sync.peers} peer(s)`}
+            {sync.mirrors > 0 ? ` · ${sync.mirrors} mirror` : ''}
             {' · '}
             {sync.lastUpdateAt
               ? `library moved ${Math.max(0, Math.round((Date.now() - sync.lastUpdateAt) / 1000))}s ago`
               : 'no sync yet'}
+            {!syncFresh ? ' · ⚠ worker not responding' : ''}
           </Text>
         )}
 
@@ -405,6 +460,18 @@ export default function App() {
             <Button title="Evict originals" onPress={evictOriginals} />
           </View>
         )}
+        <View style={styles.joinBox}>
+          <TextInput
+            style={styles.input}
+            value={mirrorKey}
+            onChangeText={setMirrorKey}
+            placeholder="blind-peer key (cold-tier mirror)"
+            placeholderTextColor="#777"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Button title="Set mirror" onPress={configureMirror} />
+        </View>
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
         <Button title={`Import + embed ${BATCH}`} onPress={importRollZeroCopy} />

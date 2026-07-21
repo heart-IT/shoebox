@@ -14,7 +14,7 @@ export interface ImportResult {
 // bare-rpc encodes the command as a uint — integers, not strings. Mirrors the
 // worker's CMD map exactly (worker/index.js). ERROR is a worker→app EVENT (the
 // worker emits it if boot fails), not a request.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10, JOIN: 11, EVICT: 12, STORAGE_STAT: 13 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10, JOIN: 11, EVICT: 12, STORAGE_STAT: 13, SET_MIRROR: 14 }
 // A worklet that never replies (e.g. a boot hang) must not leave a promise
 // pending forever — every request is raced against this deadline.
 const RPC_TIMEOUT_MS = 20000
@@ -90,9 +90,16 @@ export class VaultClient {
   }
 
   // photos plus the sync-health trio (Ch10): peers (the pipe exists),
-  // lastUpdateAt (the library actually moved), suspended (why it might not be).
-  stat(): Promise<{ photos: number; peers: number; suspended: boolean; lastUpdateAt: number }> {
+  // lastUpdateAt (the library actually moved), suspended (why it might not be),
+  // and mirrors (Ch9: is a cold-tier blind peer configured).
+  stat(): Promise<{ photos: number; peers: number; suspended: boolean; lastUpdateAt: number; mirrors: number }> {
     return this.call(CMD.STAT)
+  }
+
+  // Ch9/AF-M2: configure an always-on blind mirror (z32 key). Persisted in the
+  // worker and re-registered on every boot; returns the current mirror set.
+  setMirror(key: string): Promise<{ mirrors: string[] }> {
+    return this.call(CMD.SET_MIRROR, { key })
   }
 
   importPhoto(name: string, dataBase64: string, takenAt = Date.now()): Promise<ImportResult> {

@@ -879,6 +879,34 @@ await bpServer.close()
 await bpNet.destroy()
 fs.rmSync(bpSrvDir, { recursive: true, force: true }); fs.rmSync(bpFDir, { recursive: true, force: true }); fs.rmSync(bpMDir, { recursive: true, force: true })
 
+// Audit AF-M2: a mirror can be configured at RUNTIME (the app's Settings flow),
+// not only via the boot argument. A founder shares with NO mirror, then
+// addMirror() registers one live; the mirror then absorbs via the same path a
+// boot-configured one uses. (Fixes the completeness gap: the blind-peer
+// centerpiece of Ch9 was unreachable from the phone app.)
+const m2net = await createTestnet(3)
+const m2srvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-m2S-'))
+const m2server = new BlindPeer(path.join(m2srvDir, 'rocks'), { bootstrap: m2net.bootstrap })
+await m2server.ready(); await m2server.listen()
+const m2fDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-m2F-'))
+const m2f = new Vault(m2fDir, { encryptionKey: crypto.randomBytes(32), dhtBootstrap: m2net.bootstrap }) // NO blindPeerKeys at construction
+await m2f.ready()
+await m2f.importPhoto(PNG_1PX, { name: 'runtime.png', takenAt: 1, thumb: 'T' })
+await m2f.share()
+assert.equal(m2f.status().mirrors, 0, 'no mirror configured at boot')
+assert.equal(m2f.blind, null, 'and no mirror client exists yet')
+await m2f.addMirror(idEncoding.encode(m2server.publicKey)) // the runtime Settings flow
+assert.equal(m2f.status().mirrors, 1, 'addMirror registers the key live')
+assert.ok(m2f.blind, 'and creates the mirror client')
+assert.deepEqual(m2f.mirrorKeys(), [idEncoding.encode(m2server.publicKey)], 'mirrorKeys reports it (what the app shows)')
+let m2absorbed = false
+for (let i = 0; i < 1600 && !m2absorbed; i++) { await new Promise((res) => setTimeout(res, 25)); m2absorbed = !!(m2server.digest && (m2server.digest.bytesAllocated > 0 || m2server.digest.cores > 0)) }
+assert.ok(m2absorbed, 'AF-M2: the RUNTIME-added mirror absorbs the library (same path as a boot-configured one)')
+await m2f.addMirror(idEncoding.encode(m2server.publicKey))
+assert.equal(m2f.status().mirrors, 1, 'addMirror is idempotent on an already-configured key')
+await m2f.close(); await m2server.close(); await m2net.destroy()
+fs.rmSync(m2srvDir, { recursive: true, force: true }); fs.rmSync(m2fDir, { recursive: true, force: true })
+
 // Ch10 M1: THE SILENT KEY FAILURES. Two devices that deserved the album's full
 // history quietly didn't get it: (a) a REBOOTED owner — rotated content keys
 // lived only in memory, so the founder's own post-rotation photos went dark

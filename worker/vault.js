@@ -341,6 +341,35 @@ class Vault {
     await this.swarm.flush().catch(() => {})
   }
 
+  // Audit AF-M2: register an always-on blind mirror at RUNTIME (the app's
+  // Settings flow), not only via the boot argument. Adds the key to the set,
+  // creates the mirror client if `share()` ran before any key was configured
+  // (feeding it the existing connections' wakeup streams), and registers the
+  // autobase + every blob core. Idempotent on a key already present.
+  async addMirror (z32key) {
+    const key = idEncoding.decode(z32key)
+    const hex = b4a.toString(key, 'hex')
+    const existing = this.blindPeerKeys || []
+    if (existing.some((k) => b4a.toString(k, 'hex') === hex)) return
+    const keys = [...existing, key]
+    this.blindPeerKeys = keys
+    if (!this.swarm) return // no swarm yet — share()/boot will pick the keys up
+    if (!this.blind) {
+      this.wakeup = this.wakeup || new Wakeup(() => { this.base.update().catch(() => {}) })
+      for (const conn of this.swarm.connections) this.wakeup.addStream(conn) // catch up existing peers
+      this.blind = new BlindPeering(this.swarm.dht, this.store, { wakeup: this.wakeup, keys, pick: 1, suspended: this.suspended })
+    } else {
+      this.blind.setKeys(keys)
+    }
+    this.blind.addAutobaseBackground(this.base)
+    for (const blobs of this.blobsByEpoch.values()) this.blind.addCoreBackground(blobs.core, { referrer: this.base.key })
+  }
+
+  // The configured mirror keys, z32 — what the app shows in Settings.
+  mirrorKeys () {
+    return (this.blindPeerKeys || []).map((k) => idEncoding.encode(k))
+  }
+
   // Create a SINGLE-USE invite a second device can pair with. It multiplexes the
   // blind-pairing protocol over our EXISTING swarm — the candidate proves it holds
   // the invite, ships its writer key up as userData, and we authorize it by
@@ -722,6 +751,7 @@ class Vault {
       peers: this.swarm ? this.swarm.connections.size : 0,
       suspended: this.suspended,
       lastUpdateAt: this.lastUpdateAt || 0,
+      mirrors: (this.blindPeerKeys || []).length, // AF-M2: is a cold-tier mirror configured?
     }
   }
 
