@@ -782,6 +782,68 @@ await bpServer.close()
 await bpNet.destroy()
 fs.rmSync(bpSrvDir, { recursive: true, force: true }); fs.rmSync(bpFDir, { recursive: true, force: true }); fs.rmSync(bpMDir, { recursive: true, force: true })
 
+// Ch10 M1: THE SILENT KEY FAILURES. Two devices that deserved the album's full
+// history quietly didn't get it: (a) a REBOOTED owner — rotated content keys
+// lived only in memory, so the founder's own post-rotation photos went dark
+// after a restart; (b) a LATE JOINER — paired after a rotation, it got the
+// album key (epoch 0) in the confirm but no sealed copies of later epochs, so
+// every pre-join rotation stayed redacted for a legitimate member. Fixes: the
+// owner seals each rotation to itself too, and createInvite appends GRANT_KEYS
+// (sealed copies of every held epoch) for the member it just admitted. The
+// kicked member must gain nothing from either.
+const g10net = await createTestnet(3)
+const g10album = crypto.randomBytes(32)
+const g10fSeed = crypto.randomBytes(32)
+const g10fDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-g10F-'))
+const g10fOpts = { primaryKey: primaryKeyFromSeed(g10fSeed), encryptionKey: g10album, boxKeyPair: memberBoxKeyFromSeed(g10fSeed), dhtBootstrap: g10net.bootstrap }
+let g10Founder = new Vault(g10fDir, g10fOpts)
+await g10Founder.ready()
+const g10aSeed = crypto.randomBytes(32)
+const g10aDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-g10A-'))
+const g10A = new Vault(g10aDir, { primaryKey: primaryKeyFromSeed(g10aSeed), bootstrap: idEncoding.encode(g10Founder.base.key), encryptionKey: g10album, boxKeyPair: memberBoxKeyFromSeed(g10aSeed), dhtBootstrap: g10net.bootstrap })
+await g10A.ready()
+await g10Founder.share()
+await g10A.share()
+await g10Founder.base.append({ type: CMD.ADD_WRITER, writerKey: g10A.deviceKey, boxKey: g10A.boxPublicKey })
+for (let i = 0; i < 800 && !g10A.base.writable; i++) { await new Promise((res) => setTimeout(res, 25)); await g10Founder.base.update(); await g10A.base.update() }
+assert.ok(g10A.base.writable, 'member A is admitted')
+await g10Founder.importPhoto(PNG_1PX, { name: 'before.png', takenAt: 100, thumb: 'THUMB-B4' })
+await g10Founder.removeMember(b4a.toString(g10A.deviceKey, 'hex')) // kick → rotation to epoch 1
+await g10Founder.importPhoto(PNG_1PX_RED, { name: 'late.png', takenAt: 200, thumb: 'THUMB-LATE' })
+assert.equal(await thumbOf(g10Founder, 'late.png'), 'THUMB-LATE', 'the live owner reads its post-rotation photo')
+
+// (a) The owner reboots. The rotated key must come back from the LOG — the
+// owner-addressed sealed copy — because memory didn't survive.
+await g10Founder.close()
+g10Founder = new Vault(g10fDir, g10fOpts)
+await g10Founder.ready()
+assert.equal(await thumbOf(g10Founder, 'late.png'), 'THUMB-LATE', 'a REBOOTED owner still reads post-rotation photos (rotation sealed to itself)')
+assert.ok(g10Founder.contentKeys.has(1), 'the rebooted owner re-learned the epoch-1 key from the rotations row')
+await g10Founder.share()
+
+// (b) A late joiner pairs AFTER the rotation, through the real invite path.
+const g10invite = await g10Founder.createInvite()
+const g10jSeed = crypto.randomBytes(32)
+const g10jBox = memberBoxKeyFromSeed(g10jSeed)
+const g10jDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-g10J-'))
+const g10del = await pairAsCandidate(g10jDir, { primaryKey: primaryKeyFromSeed(g10jSeed), invite: g10invite, boxKeyPair: g10jBox, dhtBootstrap: g10net.bootstrap })
+const g10J = new Vault(g10jDir, { primaryKey: primaryKeyFromSeed(g10jSeed), bootstrap: idEncoding.encode(g10del.libraryKey), encryptionKey: b4a.from(g10del.encryptionKey), boxKeyPair: g10jBox, dhtBootstrap: g10net.bootstrap })
+await g10J.ready()
+await g10J.share()
+let g10jLate = null
+for (let i = 0; i < 800 && !g10jLate; i++) { await new Promise((res) => setTimeout(res, 25)); await g10J.base.update(); g10jLate = await thumbOf(g10J, 'late.png') || null }
+assert.equal(await thumbOf(g10J, 'before.png'), 'THUMB-B4', 'the late joiner reads epoch-0 history (album key from the confirm)')
+assert.equal(g10jLate, 'THUMB-LATE', 'the late joiner reads POST-ROTATION photos — GRANT_KEYS sealed the held epochs to it')
+assert.ok(g10J.contentKeys.has(1), 'the late joiner unsealed the granted epoch-1 key')
+
+// The kicked member gained nothing from either fix.
+for (let i = 0; i < 200; i++) { await new Promise((res) => setTimeout(res, 10)); await g10A.base.update() }
+assert.equal(await thumbOf(g10A, 'late.png'), '', 'the kicked member still reads post-rotation content as redacted')
+assert.equal(await thumbOf(g10A, 'before.png'), 'THUMB-B4', 'and keeps its pre-kick content (Inv-9 intact)')
+assert.ok(!g10A.contentKeys.has(1), 'no grant ever addressed the kicked member')
+await g10J.close(); await g10A.close(); await g10Founder.close(); await g10net.destroy()
+fs.rmSync(g10fDir, { recursive: true, force: true }); fs.rmSync(g10aDir, { recursive: true, force: true }); fs.rmSync(g10jDir, { recursive: true, force: true })
+
 // The oracle: near-duplicates first (grid-identical threshold), then oldest.
 const orDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-oracle-'))
 const orVault = new Vault(orDir)
@@ -799,4 +861,4 @@ assert.deepEqual(await orVault.evictionCandidates({}), [], 'no byte target → n
 await orVault.close()
 fs.rmSync(orDir, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle) all verified')
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle), key continuity (owner-reboot+late-joiner-grants+kicked-gains-nothing) all verified')

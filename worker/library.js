@@ -17,7 +17,8 @@ const { resolveStruct } = require('./spec')
 const photoEncoding = resolveStruct('@shoebox/photo')
 
 // Commands on the log are a tagged union: a uint type, then the payload.
-const CMD = { IMPORT_PHOTO: 1, ADD_WRITER: 2, SET_ROLE: 3, REMOVE_WRITER: 4, ROTATE_KEY: 5 }
+// Types are load-bearing wire ids — append only, never renumber.
+const CMD = { IMPORT_PHOTO: 1, ADD_WRITER: 2, SET_ROLE: 3, REMOVE_WRITER: 4, ROTATE_KEY: 5, GRANT_KEYS: 6 }
 
 const EMPTY = b4a.alloc(0)
 
@@ -36,6 +37,9 @@ const commandEncoding = {
     else if (cmd.type === CMD.REMOVE_WRITER) c.fixed32.preencode(state, cmd.writerKey)
     else if (cmd.type === CMD.SET_ROLE) { c.fixed32.preencode(state, cmd.writerKey); c.string.preencode(state, cmd.role) }
     else if (cmd.type === CMD.ROTATE_KEY) { c.uint.preencode(state, cmd.epoch); c.uint.preencode(state, cmd.entries.length); for (const e of cmd.entries) { c.fixed32.preencode(state, e.writerKey); c.buffer.preencode(state, e.sealed) } }
+    // GRANT_KEYS (Ch10 M1): sealed copies of EXISTING epochs' content keys for one
+    // late-joining member — { writerKey, entries: [{ epoch, sealed }] }.
+    else if (cmd.type === CMD.GRANT_KEYS) { c.fixed32.preencode(state, cmd.writerKey); c.uint.preencode(state, cmd.entries.length); for (const e of cmd.entries) { c.uint.preencode(state, e.epoch); c.buffer.preencode(state, e.sealed) } }
   },
   encode (state, cmd) {
     c.uint.encode(state, cmd.type)
@@ -44,6 +48,7 @@ const commandEncoding = {
     else if (cmd.type === CMD.REMOVE_WRITER) c.fixed32.encode(state, cmd.writerKey)
     else if (cmd.type === CMD.SET_ROLE) { c.fixed32.encode(state, cmd.writerKey); c.string.encode(state, cmd.role) }
     else if (cmd.type === CMD.ROTATE_KEY) { c.uint.encode(state, cmd.epoch); c.uint.encode(state, cmd.entries.length); for (const e of cmd.entries) { c.fixed32.encode(state, e.writerKey); c.buffer.encode(state, e.sealed) } }
+    else if (cmd.type === CMD.GRANT_KEYS) { c.fixed32.encode(state, cmd.writerKey); c.uint.encode(state, cmd.entries.length); for (const e of cmd.entries) { c.uint.encode(state, e.epoch); c.buffer.encode(state, e.sealed) } }
   },
   decode (state) {
     const type = c.uint.decode(state)
@@ -52,6 +57,7 @@ const commandEncoding = {
     if (type === CMD.REMOVE_WRITER) return { type, writerKey: c.fixed32.decode(state) }
     if (type === CMD.SET_ROLE) return { type, writerKey: c.fixed32.decode(state), role: c.string.decode(state) }
     if (type === CMD.ROTATE_KEY) { const epoch = c.uint.decode(state); const n = c.uint.decode(state); const entries = []; for (let i = 0; i < n; i++) entries.push({ writerKey: c.fixed32.decode(state), sealed: c.buffer.decode(state) }); return { type, epoch, entries } }
+    if (type === CMD.GRANT_KEYS) { const writerKey = c.fixed32.decode(state); const n = c.uint.decode(state); const entries = []; for (let i = 0; i < n; i++) entries.push({ epoch: c.uint.decode(state), sealed: c.buffer.decode(state) }); return { type, writerKey, entries } }
     return { type }
   }
 }
@@ -136,6 +142,27 @@ async function apply (nodes, view, host) {
       const sealed = {}
       for (const e of cmd.entries) sealed[roleKey(e.writerKey)] = b4a.toString(e.sealed, 'hex')
       await view.rotations.put(epochKey(cmd.epoch), JSON.stringify(sealed))
+    } else if (cmd.type === CMD.GRANT_KEYS) {
+      // Late-joiner unlock — OWNER-only (Ch10 M1). Adds one member's sealed copy of
+      // an EXISTING epoch's content key to that epoch's rotation row, so a device
+      // admitted after a rotation can still open the album's full history. Gates:
+      // the target must already be on the roster (a grant admits nobody), an
+      // unknown epoch is skipped (a grant can't invent history), and a copy that
+      // exists is never overwritten (first write wins — a kicked-then-reinvited
+      // member's grants arrive as NEW writes, never as silent replacements).
+      if (!author || await roleOf(view.roles, author) !== ROLE.OWNER) continue
+      const key = cmd.writerKey
+      if (!key || key.byteLength !== 32) continue
+      if (!(await roleOf(view.roles, key))) continue
+      for (const e of cmd.entries) {
+        const node = await view.rotations.get(epochKey(e.epoch))
+        if (!node) continue
+        const sealed = JSON.parse(node.value)
+        const hex = roleKey(key)
+        if (sealed[hex]) continue
+        sealed[hex] = b4a.toString(e.sealed, 'hex')
+        await view.rotations.put(epochKey(e.epoch), JSON.stringify(sealed))
+      }
     }
   }
 }

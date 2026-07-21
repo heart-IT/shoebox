@@ -579,3 +579,29 @@ Not wired: `blind-push` (push-style wakeups are mobile push infrastructure —
 infra follow-on, not code this repo can prove); deeper protomux-wakeup
 semantics (backgrounded phone learns what the mirror absorbed) are
 device-verified territory.
+
+## Ch10 M1 — key continuity: the silent failures found by writing the test (2026-07-21)
+
+Part 10's "multi-device unlock distribution" turned out to be TWO real bugs in
+this codebase, both silent (nothing crashed; photos just rendered redacted for
+devices that deserved them):
+
+- **The rebooted owner.** `rotateContentKey` sealed the new epoch's key to every
+  remaining MEMBER — and kept the owner's copy only in `contentKeys` (memory).
+  A founder restart re-derived everything from its seed except the rotated
+  keys: the owner's own post-rotation photos went dark. Fix: every rotation
+  now also seals to the owner's own box key; the rebooted founder re-learns
+  its epochs from the same rotations rows as everyone else. The smoke fails on
+  exactly this assertion with the fix reverted (verified via stash).
+- **The late joiner.** A member paired AFTER a rotation received the album key
+  (epoch 0) in the pairing confirm but no sealed copies of epochs ≥ 1 — every
+  pre-join rotation stayed redacted for a legitimate member forever. Fix: new
+  command `GRANT_KEYS: 6` (wire ids are append-only) — `createInvite` follows
+  ADD_WRITER with sealed copies of every epoch the owner holds. `apply()`
+  gates it owner-only + roster-only, skips unknown epochs (a grant can't
+  invent history), and never overwrites an existing sealed copy (first write
+  wins). The joiner's existing `_syncContentKeys` picks grants up unchanged.
+- **Semantics note:** a kicked-then-reinvited member gets full history back by
+  construction — re-inviting IS re-sharing, not a redaction tool. The kicked
+  state is where Inv-9 lives, and the smoke re-asserts the kicked member gains
+  nothing from either fix.

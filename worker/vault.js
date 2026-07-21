@@ -216,6 +216,11 @@ class Vault {
     const key = newContentKey()
     const members = await memberBoxKeys(this.base.view) // roster AFTER the removal
     const entries = members.map((m) => ({ writerKey: b4a.from(m.writerKeyHex, 'hex'), sealed: sealTo(m.boxKey, key) }))
+    // The owner seals to ITSELF too (Ch10 M1). contentKeys is memory; without an
+    // owner-addressed copy in the log, a REBOOTED founder re-derives everything
+    // except the rotated keys — and its own post-rotation photos go dark. The
+    // silent failure class this chapter exists for.
+    if (this.boxKeyPair) entries.push({ writerKey: b4a.from(this.base.local.key), sealed: sealTo(this.boxKeyPair.publicKey, key) })
     await this.base.append({ type: CMD.ROTATE_KEY, epoch, entries })
     await this.base.update()
     this.contentKeys.set(epoch, key) // the owner holds every key it mints
@@ -334,6 +339,20 @@ class Vault {
         if (used || !writerKey) return req.deny()
         used = true // set before the first await — onadd's sync prefix is atomic
         await this.base.append({ type: CMD.ADD_WRITER, writerKey, boxKey })
+        // Late-joiner unlock (Ch10 M1): the album key in the confirm only opens
+        // epoch 0. Every rotation that happened BEFORE this member existed sealed
+        // its content key to the members of that moment — so grant this member a
+        // sealed copy of each epoch the owner holds, or every pre-join rotation
+        // stays dark to a legitimate member forever. (A re-invite deliberately
+        // restores full history: kick-then-reinvite is re-sharing, not redaction.)
+        if (this.encryptionKey && boxKey) {
+          await this._syncContentKeys()
+          const entries = [...this.contentKeys]
+            .filter(([epoch]) => epoch > 0) // epoch 0 IS the album key, in the confirm
+            .sort((a, b) => a[0] - b[0])
+            .map(([epoch, key]) => ({ epoch, sealed: sealTo(boxKey, key) }))
+          if (entries.length) await this.base.append({ type: CMD.GRANT_KEYS, writerKey: b4a.from(writerKey), entries })
+        }
         // Hand back the library key AND the album encryption key (= the epoch-0
         // content key). The blind-pairing handshake protects the confirm, so only
         // this admitted member learns it — never over the DHT or plain replication.
