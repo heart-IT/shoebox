@@ -823,3 +823,13 @@ the following. Fixes land in severity batches, each counterfactual-verified
 - **AF-L (refreshLink):** the blob-server's fresh-port fallback is unwired; held
   links break only if the original-port re-bind fails on resume (rare), and the
   grid re-mints links on reopen. Left as a known minor.
+
+- **AF-M3 (mirror coverage):** each device configures its OWN mirror (SET_MIRROR,
+  now reachable — AF-M2), so mirroring every member's photos means setting the
+  mirror on each device. Auto-propagating the founder's mirror set through the
+  replicated log is a deliberate non-choice for now (a mirror is a device-operator
+  decision, not album data); noted as optional future work.
+- **AF-L (transport firewall):** a kicked member keeps the album key and can still
+  connect on the members' topic to harvest IPs (its content is already redacted).
+  A Hyperswarm firewall keyed on the current roster would drop revoked writers at
+  the transport edge — defense-in-depth, left as a known LOW.
