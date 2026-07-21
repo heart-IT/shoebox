@@ -140,6 +140,12 @@ async function apply (nodes, view, host) {
       // find and open its own copy. A removed member simply has no entry here, so the
       // photos encrypted under this epoch stay redacted for them forever.
       if (!author || await roleOf(view.roles, author) !== ROLE.OWNER) continue
+      // Write-once (audit AF-M4): a rotations row is never overwritten. Two
+      // concurrent kicks (or a partitioned second owner) that both mint the same
+      // epoch with different keys must not clobber the first — some member may
+      // already hold it, and photos tagged that epoch would become permanently
+      // undecryptable. First ROTATE_KEY for an epoch wins; a duplicate is dropped.
+      if (await view.rotations.get(epochKey(cmd.epoch))) continue
       const sealed = {}
       for (const e of cmd.entries) sealed[roleKey(e.writerKey)] = b4a.toString(e.sealed, 'hex')
       await view.rotations.put(epochKey(cmd.epoch), JSON.stringify(sealed))

@@ -642,3 +642,34 @@ ensureOwner()'s role claim advances the view during boot, and lastUpdateAt
 reports that too. After suspend, peers reads 0 (connections are genuinely
 destroyed) and suspended: true says why — the two numbers together distinguish
 "backgrounded" from "broken".
+
+## Post-audit hardening (4-dimension audit, 2026-07-21)
+
+A correctness / completeness / P2P-readiness / production-readiness audit
+(four parallel auditors + adversarial re-verification against the code) found
+the following. Fixes land in severity batches, each counterfactual-verified
+(revert the fix → the new smoke assertion fails).
+
+### Batch 1 — encryption correctness
+
+- **AF-H1 (HIGH, correctness):** on an ENCRYPTED album, importing into an epoch
+  whose content key hadn't replicated in yet silently opened an UNENCRYPTED blob
+  core and stored a PLAINTEXT thumbnail — plaintext bytes then replicated to the
+  blind mirror, and the photo later "decrypted" into garbage for everyone. Real
+  trigger: a late joiner in the window between applying `ROTATE_KEY` (epoch
+  advances) and its `GRANT_KEYS` (its sealed copy). `_importPhoto` now refuses
+  the import when `encryptionKey` is set but the epoch's content key is absent.
+  Smoke: `AF-H1` (counterfactual-verified).
+- **AF-M4 (MEDIUM, correctness/P2P):** concurrent `removeMember` calls could each
+  read the same `currentEpoch` and mint the SAME epoch with different keys — the
+  second `ROTATE_KEY` clobbering the first and orphaning photos encrypted under
+  the losing key. Two-part fix: membership mutations are serialized
+  (`_withMembershipLock`), and `apply()` makes a rotations row **write-once**
+  (first `ROTATE_KEY` for an epoch wins, duplicate dropped) as a
+  partition/second-owner backstop. Smoke: `AF-M4`.
+- **AF-M8 (MEDIUM, completeness):** revocation redacted the thumbnail + bytes but
+  left the `dhash` and the MobileNet `embedding` (a 1001-way "what this depicts"
+  distribution) in the album-key view in cleartext — a kicked member could still
+  classify post-kick photos, contradicting the "name and time only" boundary.
+  Both fields are now content-encrypted under the epoch key alongside the
+  thumbnail (`_encStr`/`_encBuf`, decrypted in `decorate`). Smoke: `AF-M8`.

@@ -94,6 +94,21 @@ class Vault {
     this.blindPeerKeys = blindPeerKeys
     this.blind = null // BlindPeering client, created with the swarm in share()
     this.wakeup = null
+    // Audit AF-M4: serialize roster/rotation mutations. RPC handlers run
+    // concurrently, so two overlapping removeMember() calls could each read the
+    // same currentEpoch and mint the SAME epoch with different keys — the second
+    // ROTATE_KEY row clobbering the first and orphaning photos encrypted under
+    // the losing key. One membership mutation at a time keeps each rotation's
+    // roster read and epoch number correct; apply() adds a write-once backstop.
+    this._membershipLock = Promise.resolve()
+  }
+
+  // Single-flight around membership mutations (removeMember). A failing
+  // mutation must not wedge the chain, so both continuations swallow.
+  _withMembershipLock (fn) {
+    const run = this._membershipLock.then(fn, fn)
+    this._membershipLock = run.then(() => {}, () => {})
+    return run
   }
 
   async ready () {
@@ -202,10 +217,15 @@ class Vault {
   // On an ENCRYPTED album, revocation ALSO rotates the content key (Ch7 M3): future
   // photos are sealed under a key the removed member never receives.
   async removeMember (writerKeyHex) {
-    if (!(await this.isOwner())) throw new Error('only the album owner can remove a member')
-    await this.base.append({ type: CMD.REMOVE_WRITER, writerKey: b4a.from(writerKeyHex, 'hex') })
-    await this.base.update()
-    if (this.encryptionKey) await this.rotateContentKey()
+    if (!/^[0-9a-fA-F]{64}$/.test(writerKeyHex)) throw new Error('removeMember: writerKey must be 32-byte hex')
+    // Serialized (AF-M4): the whole kick+rotate is atomic w.r.t. other kicks, so
+    // each rotation reads the post-removal roster and a fresh, distinct epoch.
+    return this._withMembershipLock(async () => {
+      if (!(await this.isOwner())) throw new Error('only the album owner can remove a member')
+      await this.base.append({ type: CMD.REMOVE_WRITER, writerKey: b4a.from(writerKeyHex, 'hex') })
+      await this.base.update()
+      if (this.encryptionKey) await this.rotateContentKey()
+    })
   }
 
   // Mint a fresh content key for the next epoch and seal it to every REMAINING
@@ -392,6 +412,17 @@ class Vault {
     await this._syncContentKeys()
     const epoch = await currentEpoch(this.base.view)
     const contentKey = this.contentKeys.get(epoch)
+    // Audit AF-H1: on an ENCRYPTED album, refuse to import into an epoch whose
+    // content key we don't hold yet. Without this guard `_blobsForEpoch` would
+    // open an UNENCRYPTED core (ck === undefined) and `_encStr` would store the
+    // thumbnail in cleartext — plaintext bytes replicated to the blind mirror,
+    // and a photo the resolve hook later "decrypts" into garbage for everyone.
+    // The trigger is a real partial-sync window: a late joiner that has applied
+    // ROTATE_KEY (epoch advanced) but not yet its GRANT_KEYS sealed copy. Fail
+    // loudly and let the caller retry once the key replicates in.
+    if (this.encryptionKey && contentKey === undefined) {
+      throw new Error('album epoch key not available yet — wait for sync to catch up, then retry the import')
+    }
     // Phase 1: bytes into THIS device's blobs core for this epoch (encrypted at the
     // hypercore layer with the epoch's content key), never into the command log.
     const blobs = await this._blobsForEpoch(epoch)
@@ -409,11 +440,14 @@ class Vault {
       width: meta.width || 0,
       height: meta.height || 0,
       orientation: meta.orientation || 0,
-      // The thumbnail is browsable content, so it's sealed under the epoch key too:
-      // a revoked member decrypts the album (metadata) but this reads back as ''.
-      thumb: this._encThumb(meta.thumb, contentKey),
-      dhash: meta.dhash || '',
-      embedding: meta.embedding || null,
+      // Browsable content is sealed under the epoch key (audit AF-M8): thumbnail,
+      // the dHash near-duplicate column, AND the MobileNet embedding — the last
+      // is a 1001-way classifier distribution, i.e. "what this photo depicts", so
+      // leaving it in the album-key view let a kicked member classify post-kick
+      // photos. All three now read back redacted ('' / null) without the key.
+      thumb: this._encStr(meta.thumb, contentKey),
+      dhash: this._encStr(meta.dhash, contentKey),
+      embedding: this._encBuf(meta.embedding, contentKey),
       epoch,
     }
     // Phase 2: append a pointer command; apply() linearizes it into the view.
@@ -545,22 +579,38 @@ class Vault {
     return node ? this.decorate(node.value, node.key) : null
   }
 
-  // Encrypt a thumbnail (a data: URL string) under a content key → base64. Passed
-  // through untouched for an unencrypted album (no content key).
-  _encThumb (thumb, contentKey) {
-    if (!thumb) return ''
-    if (!contentKey) return thumb
-    return b4a.toString(contentEncrypt(contentKey, b4a.from(thumb, 'utf-8')), 'base64')
+  // Content-encrypt an optional UTF-8 string field (thumbnail data: URL, dHash)
+  // under a content key → base64. Passed through untouched for an unencrypted
+  // album (no content key).
+  _encStr (value, contentKey) {
+    if (!value) return ''
+    if (!contentKey) return value
+    return b4a.toString(contentEncrypt(contentKey, b4a.from(value, 'utf-8')), 'base64')
   }
 
-  // Decrypt a stored thumbnail with the key for its epoch. Returns '' when we lack
-  // that epoch's key — the redaction a revoked member sees for post-rotation photos.
-  _decThumb (record) {
-    const thumb = record.thumb || ''
-    if (!thumb || !this.encryptionKey) return thumb // unencrypted album → plaintext
-    const ck = this.contentKeys.get(record.epoch || 0)
-    const dec = ck ? contentDecrypt(ck, b4a.from(thumb, 'base64')) : null
+  // Decrypt a content-encrypted string field with the key for its epoch. Returns
+  // '' when we lack that epoch's key — the redaction a revoked member sees.
+  _decStr (value, epoch) {
+    if (!value || !this.encryptionKey) return value || '' // unencrypted album → plaintext
+    const ck = this.contentKeys.get(epoch || 0)
+    const dec = ck ? contentDecrypt(ck, b4a.from(value, 'base64')) : null
     return dec ? b4a.toString(dec, 'utf-8') : ''
+  }
+
+  // Content-encrypt an optional raw buffer field (the float32 embedding) under a
+  // content key. Untouched for an unencrypted album; null stays null.
+  _encBuf (buf, contentKey) {
+    if (!buf) return null
+    if (!contentKey) return buf
+    return contentEncrypt(contentKey, buf)
+  }
+
+  // Decrypt a content-encrypted buffer field. null (missing key or not indexed)
+  // is the redaction — the app treats a null embedding as "not searchable".
+  _decBuf (buf, epoch) {
+    if (!buf || !this.encryptionKey) return buf || null
+    const ck = this.contentKeys.get(epoch || 0)
+    return ck ? contentDecrypt(ck, buf) : null
   }
 
   // Attach the localhost blob-server URL, a stable id, and the decrypted thumbnail;
@@ -572,7 +622,14 @@ class Vault {
       const ck = this.contentKeys.get(record.epoch || 0)
       if (ck) this._coreContentKey.set(b4a.toString(record.blobsCoreKey, 'hex'), ck)
     }
-    return { ...record, thumb: this._decThumb(record), id: key ? b4a.toString(key, 'hex') : '', link: this.link(record) }
+    return {
+      ...record,
+      thumb: this._decStr(record.thumb, record.epoch),
+      dhash: this._decStr(record.dhash, record.epoch),
+      embedding: this._decBuf(record.embedding, record.epoch),
+      id: key ? b4a.toString(key, 'hex') : '',
+      link: this.link(record),
+    }
   }
 
   link (record) {

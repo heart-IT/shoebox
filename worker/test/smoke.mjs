@@ -24,9 +24,12 @@ const BlindPeer = require('blind-peer')
 const idEncoding = require('hypercore-id-encoding')
 const crypto = require('hypercore-crypto')
 const { resolveStruct } = require('../spec')
-const { CMD, commandEncoding, openView, apply, roleOf, discoveryTopic } = require('../library')
+const { CMD, commandEncoding, openView, apply, roleOf, discoveryTopic, currentEpoch, epochKey } = require('../library')
 const { primaryKeyFromSeed, saveMembership, loadMembership } = require('../identity')
-const { memberBoxKeyFromSeed } = require('../rotation')
+const { memberBoxKeyFromSeed, sealTo, openSealed } = require('../rotation')
+const currentEpochOf = (v) => currentEpoch(v.base.view)
+const epochKeyOf = (n) => epochKey(n)
+const openSealedOf = (sealed, kp) => openSealed(sealed, kp)
 
 const PNG_1PX = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -379,23 +382,82 @@ assert.equal(tb, 'THUMB-SHARED', 'member B reads the epoch-0 thumbnail')
 await rotFounder.removeMember(b4a.toString(memA.deviceKey, 'hex'))
 for (let i = 0; i < 600 && memA.base.writable; i++) { await new Promise((res) => setImmediate(res)); await rotFounder.base.update(); await memA.base.update() }
 assert.ok(!memA.base.writable, 'the kicked member A lost write access')
-// A new photo, encrypted under the rotated (epoch-1) content key.
-const { link: bLink } = await rotFounder.importPhoto(PNG_1PX_RED, { name: 'after.png', takenAt: 200, thumb: 'THUMB-AFTER' })
+// A new photo, encrypted under the rotated (epoch-1) content key. It carries a
+// dHash and an embedding too — audit AF-M8 seals those under the content key,
+// so a kicked member can't classify it either.
+const AF_EMB = Buffer.from(new Float32Array([0.1, 0.2, 0.3]).buffer)
+const { link: bLink } = await rotFounder.importPhoto(PNG_1PX_RED, { name: 'after.png', takenAt: 200, thumb: 'THUMB-AFTER', dhash: 'abcdef0123456789', embedding: AF_EMB })
+const fieldOf = async (v, name, field) => { for (const p of await v.list({ limit: 50 })) if (p.name === name) return p[field]; return undefined }
 let bAfter = null
 for (let i = 0; i < 600 && !bAfter; i++) { await new Promise((res) => setImmediate(res)); await rotFounder.base.update(); await memA.base.update(); await memB.base.update(); bAfter = await thumbOf(memB, 'after.png') }
 // The remaining member B unsealed the new key and reads the new photo; the rotFounder does too.
 assert.equal(await thumbOf(rotFounder, 'after.png'), 'THUMB-AFTER', 'the rotFounder reads the post-rotation thumbnail')
 assert.equal(bAfter, 'THUMB-AFTER', 'remaining member B reads the post-rotation thumbnail (got the sealed epoch-1 key)')
 assert.ok(memB.contentKeys.has(1), 'member B holds the rotated content key')
+// AF-M8: dHash + embedding are content-encrypted, so a holder reads them and a
+// kicked member does not.
+assert.equal(await fieldOf(rotFounder, 'after.png', 'dhash'), 'abcdef0123456789', 'the owner reads the post-rotation dHash')
+assert.ok(b4a.equals(b4a.from(await fieldOf(memB, 'after.png', 'embedding')), AF_EMB), 'remaining member B decrypts the post-rotation embedding')
 // The kicked member A: still sees the album and its OLD photo, but the new one is redacted.
 assert.equal(await thumbOf(memA, 'shared.png'), 'THUMB-SHARED', 'kicked member keeps pre-kick content (forward-only, Inv-9)')
 assert.equal(await thumbOf(memA, 'after.png'), '', 'kicked member CANNOT read post-rotation content — the thumbnail is redacted')
+assert.equal(await fieldOf(memA, 'after.png', 'dhash'), '', 'kicked member CANNOT read the post-rotation dHash (AF-M8)')
+assert.equal(await fieldOf(memA, 'after.png', 'embedding'), null, 'kicked member CANNOT read the post-rotation embedding (AF-M8)')
 assert.ok(!memA.contentKeys.has(1), 'kicked member never received the rotated content key')
 // The full-resolution original of the post-rotation photo serves plaintext for the rotFounder (per-epoch blob core, keyed by the rotated content key).
 assert.ok(b4a.from(await (await fetch(bLink)).arrayBuffer()).equals(PNG_1PX_RED), 'the rotFounder serves the post-rotation original (epoch-1 blob core decrypts)')
 rA[0].destroy(); rA[1].destroy(); rB[0].destroy(); rB[1].destroy()
 await memA.close(); await memB.close(); await rotFounder.close()
 for (const d of rotDirs) fs.rmSync(d, { recursive: true, force: true })
+
+// Audit AF-H1: an ENCRYPTED album refuses to import into an epoch whose content
+// key hasn't arrived — no silent plaintext blob. Stage the partial-sync window:
+// a device that sees the rotations row (currentEpoch advances) but holds no
+// sealed copy of that epoch. Founder + member A, kick A (→ epoch 1 sealed to the
+// founder only), then a fresh device J bootstrapped with the album key + its own
+// box key replicates the rotation but was never granted epoch 1.
+const h1Album = crypto.randomBytes(32)
+const h1Dirs = []
+const h1mk = (opts) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-h1-')); h1Dirs.push(d); return new Vault(d, opts) }
+const h1F = h1mk({ encryptionKey: h1Album, boxKeyPair: memberBoxKeyFromSeed(crypto.randomBytes(32)) })
+await h1F.ready()
+const h1A = h1mk({ bootstrap: idEncoding.encode(h1F.base.key), encryptionKey: h1Album, boxKeyPair: memberBoxKeyFromSeed(crypto.randomBytes(32)) })
+await h1A.ready()
+await h1F.base.append({ type: CMD.ADD_WRITER, writerKey: h1A.deviceKey, boxKey: h1A.boxPublicKey })
+await h1F.base.update()
+const h1p = (x, y) => { const a = x.base.replicate(true); const b = y.base.replicate(false); a.pipe(b).pipe(a); return [a, b] }
+const h1rA = h1p(h1F, h1A)
+for (let i = 0; i < 600 && !h1A.base.writable; i++) { await new Promise((res) => setImmediate(res)); await h1F.base.update(); await h1A.base.update() }
+await h1F.removeMember(b4a.toString(h1A.deviceKey, 'hex')) // → rotate to epoch 1, sealed to founder only
+// A stranger-to-the-rotation device J: has the album key, replicates the row, no epoch-1 grant.
+const h1J = h1mk({ bootstrap: idEncoding.encode(h1F.base.key), encryptionKey: h1Album, boxKeyPair: memberBoxKeyFromSeed(crypto.randomBytes(32)) })
+await h1J.ready()
+const h1rJ = h1p(h1F, h1J)
+for (let i = 0; i < 800 && (await currentEpochOf(h1J)) < 1; i++) { await new Promise((res) => setImmediate(res)); await h1F.base.update(); await h1J.base.update() }
+assert.equal(await currentEpochOf(h1J), 1, 'J sees the rotation (epoch advanced to 1)')
+await h1J._syncContentKeys()
+assert.ok(!h1J.contentKeys.has(1), 'J holds NO epoch-1 key (never granted) — the partial-sync window')
+await assert.rejects(() => h1J.importPhoto(PNG_1PX, { name: 'racy.png', takenAt: 1, thumb: 'X' }), /epoch key not available/, 'AF-H1: import into an unheld encrypted epoch is refused, not silently written in plaintext')
+h1rA[0].destroy(); h1rA[1].destroy(); h1rJ[0].destroy(); h1rJ[1].destroy()
+await h1A.close(); await h1J.close(); await h1F.close()
+for (const d of h1Dirs) fs.rmSync(d, { recursive: true, force: true })
+
+// Audit AF-M4: the ROTATE_KEY row is write-once in apply(). Append two rotations
+// for the SAME epoch with different keys; the first wins and is never clobbered
+// (else a member holding the first key would have its photos orphaned).
+const m4Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-m4-'))
+const m4 = new Vault(m4Dir, { encryptionKey: crypto.randomBytes(32), boxKeyPair: memberBoxKeyFromSeed(crypto.randomBytes(32)) })
+await m4.ready()
+const m4keyA = crypto.randomBytes(32); const m4keyB = crypto.randomBytes(32)
+const m4self = { writerKey: b4a.from(m4.base.local.key), sealedA: sealTo(m4.boxKeyPair.publicKey, m4keyA), sealedB: sealTo(m4.boxKeyPair.publicKey, m4keyB) }
+await m4.base.append({ type: CMD.ROTATE_KEY, epoch: 1, entries: [{ writerKey: m4self.writerKey, sealed: m4self.sealedA }] })
+await m4.base.append({ type: CMD.ROTATE_KEY, epoch: 1, entries: [{ writerKey: m4self.writerKey, sealed: m4self.sealedB }] })
+await m4.base.update()
+const m4row = JSON.parse((await m4.base.view.rotations.get(epochKeyOf(1))).value)
+const m4opened = openSealedOf(b4a.from(m4row[b4a.toString(m4.base.local.key, 'hex')], 'hex'), m4.boxKeyPair)
+assert.ok(b4a.equals(m4opened, m4keyA), 'AF-M4: the FIRST rotation for an epoch wins; the duplicate never overwrites it')
+await m4.close()
+fs.rmSync(m4Dir, { recursive: true, force: true })
 
 // Ch7 M4: A PHONE JOINS AS A SECOND DEVICE. The full joiner path the app runs.
 // pairAsCandidate() does the handshake (ships writerKey||boxKey, receives
