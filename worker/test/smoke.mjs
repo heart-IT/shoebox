@@ -459,4 +459,103 @@ assert.deepEqual(x2AfterReboot, ['founder.png', 'phone.png'], 'the phone reopens
 await x2Joiner.close(); await x2Founder.close(); await x2net.destroy()
 fs.rmSync(x2fDir, { recursive: true, force: true }); fs.rmSync(x2jDir, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart all verified')
+// Ch8 M1: SUSPENSION IS NOT GRACEFUL SHUTDOWN (Inv-10). The suspend/resume pair
+// has been wired since Ch1 and never once executed by a test — the vault-client
+// comment even admits it's dead code without the AppState hook. This section
+// makes it real: suspension stalls REPLICATION but never the LIBRARY (a
+// suspended device still imports locally), transitions are serialized so an
+// AppState storm can't interleave them, a suspend racing an import drains it
+// first, and the blob-server comes back on its original port so links the UI
+// already holds survive the round trip.
+
+// A never-shared vault: transitions are idempotent no-ops, imports still land
+// while suspended, and a swarm minted DURING suspension comes up suspended
+// (the share-after-import path a backgrounded first import would take).
+const loneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-lone-'))
+const lone = new Vault(loneDir)
+await lone.ready()
+await lone.suspend()
+await lone.suspend() // double-suspend: second is a no-op, not a re-teardown
+assert.ok(lone.suspended, 'a never-shared vault suspends cleanly')
+await lone.importPhoto(PNG_1PX, { name: 'bg.png', takenAt: 1000 })
+assert.equal(await lone.count(), 1, 'a suspended vault still imports locally (local-first)')
+await lone.share()
+assert.ok(lone.swarm.suspended, 'a swarm minted while suspended comes up suspended, not live')
+await lone.resume()
+await lone.resume() // double-resume: no-op
+assert.ok(!lone.suspended && !lone.swarm.suspended, 'resume brings the minted swarm up live')
+await lone.close()
+fs.rmSync(loneDir, { recursive: true, force: true })
+
+// Two devices over the testnet: a founder and a read replica.
+const s8net = await createTestnet(3)
+const s8fDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-s8F-'))
+const s8Founder = new Vault(s8fDir, { dhtBootstrap: s8net.bootstrap })
+await s8Founder.ready()
+const { link: preLink } = await s8Founder.importPhoto(PNG_1PX, { name: 'pre.png', takenAt: 1000 })
+await s8Founder.share()
+const s8mDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-s8M-'))
+const s8Member = new Vault(s8mDir, { bootstrap: idEncoding.encode(s8Founder.base.key), dhtBootstrap: s8net.bootstrap })
+await s8Member.ready()
+await s8Member.share()
+const s8names = async (v) => (await v.list({ limit: 20 })).map((p) => p.name).sort()
+let s8seen = []
+for (let i = 0; i < 800 && !s8seen.includes('pre.png'); i++) { await new Promise((res) => setTimeout(res, 25)); s8seen = await s8names(s8Member) }
+assert.deepEqual(s8seen, ['pre.png'], 'the member converges before suspension')
+
+// The member backgrounds while the founder stays live — the everyday case: a
+// phone in a pocket, a laptop mirror still up. The founder keeps importing;
+// nothing reaches the member until it resumes (bounded negative poll, ~2s).
+await s8Member.suspend()
+assert.ok(s8Member.swarm.suspended, 'suspend() suspends the underlying swarm')
+await s8Founder.importPhoto(PNG_1PX_RED, { name: 'while-suspended.png', takenAt: 2000 })
+for (let i = 0; i < 80; i++) { await new Promise((res) => setTimeout(res, 25)) }
+assert.ok(!(await s8names(s8Member)).includes('while-suspended.png'), 'a suspended member receives NOTHING (replication stalled)')
+
+// The member resumes AGAINST A LIVE PEER and catches up. (Deliberately
+// one-sided: on resume, reconnection is driven by the resumer's own
+// re-announce + re-query — two peers resuming simultaneously can each miss
+// the other's records and idle until the next topic refresh. A phone resumes
+// into a world where someone stayed up; the test models that world.)
+await s8Member.resume()
+let s8caught = []
+for (let i = 0; i < 800 && s8caught.length < 2; i++) { await new Promise((res) => setTimeout(res, 25)); s8caught = await s8names(s8Member) }
+assert.deepEqual(s8caught, ['pre.png', 'while-suspended.png'], 'the resumed member catches up on what it missed')
+
+// Now the founder backgrounds (member stays live). Its library still works —
+// a local import lands — but its localhost blob-server socket is gone.
+await s8Founder.suspend()
+await s8Founder.importPhoto(PNG_1PX, { name: 'offline.png', takenAt: 3000 })
+assert.equal(await s8Founder.count(), 3, 'a suspended founder still imports locally (the library outlives the socket)')
+await assert.rejects(() => fetch(preLink), undefined, 'the blob-server socket is released while suspended')
+
+// An AppState storm: four transitions fired in the same tick. Serialization
+// runs them in order; the flag checks collapse the redundant ones; the last
+// one wins. No interleave, no throw, ends live.
+await Promise.all([s8Founder.suspend(), s8Founder.resume(), s8Founder.suspend(), s8Founder.resume()])
+assert.ok(!s8Founder.suspended && !s8Founder.swarm.suspended, 'a suspend/resume storm serializes — last transition wins, swarm ends live')
+
+// A suspend racing an in-flight import waits for the append to land before it
+// reports quiescent — the SUSPEND reply is the app's freeze signal, and a
+// half-appended import must not be what the OS freezes.
+let s8ImportDone = false
+const s8racing = s8Founder.importPhoto(PNG_1PX_RED, { name: 'racing.png', takenAt: 4000 }).then((r) => { s8ImportDone = true; return r })
+const s8drained = s8Founder.suspend().then(() => s8ImportDone)
+assert.ok(await s8drained, 'suspend drains the in-flight import before completing')
+await s8racing
+assert.equal(await s8Founder.count(), 4, 'the drained import landed exactly once (no corruption, no loss)')
+
+// The founder resumes against the live member: everything imported behind the
+// member's back converges, and the founder's pre-suspension link still serves —
+// the blob-server re-bound its original port.
+await s8Founder.resume()
+let s8after = []
+for (let i = 0; i < 800 && s8after.length < 4; i++) { await new Promise((res) => setTimeout(res, 25)); s8after = await s8names(s8Member) }
+assert.deepEqual(s8after, ['offline.png', 'pre.png', 'racing.png', 'while-suspended.png'], 'the member converges to every photo imported while the founder was backgrounded')
+const s8res = await fetch(preLink)
+assert.equal(s8res.status, 200, 'a pre-suspension blob link still serves after resume (original port re-bound)')
+assert.ok(Buffer.from(await s8res.arrayBuffer()).equals(PNG_1PX), 'and the served bytes are intact')
+await s8Member.close(); await s8Founder.close(); await s8net.destroy()
+fs.rmSync(s8fDir, { recursive: true, force: true }); fs.rmSync(s8mDir, { recursive: true, force: true })
+
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival) all verified')

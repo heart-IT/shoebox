@@ -429,3 +429,43 @@ key stays MEMBERSHIP (never rotates — you can't un-replicate a log). A separat
   (name, time — the metadata skeleton in the album-encrypted view); rotation
   redacts the CONTENT (thumbnail + bytes), not the existence. App UI + blob-server
   streaming of originals under rotated keys is device-verified follow-on.
+
+## Ch08 M1 — suspend/resume becomes real (2026-07-21)
+
+The lifecycle pair (`Vault.suspend()/resume()`, CMD 3/4, the AppState hook) had
+been wired since Ch1 and **never executed by any test** — the vault-client
+comment even called it dead code without the hook. M1 makes it load-bearing:
+
+- **Serialized transitions.** The OS can flip background→active→background
+  faster than a transition completes; an unserialized resume interleaving a
+  half-done suspend ends foregrounded-with-a-dead-swarm (or the inverse). Both
+  transitions and `close()` now run through one queue on the Vault; the
+  suspended-flag check lives INSIDE the queue so a storm collapses to no-ops.
+  Smoke: four transitions fired in one tick, last one wins.
+- **Bounded import drain.** SUSPEND's reply is the app's freeze signal, so it
+  must mean *quiescent*: suspend waits (≤5 s, then proceeds anyway — suspension
+  is not graceful shutdown, Inv-10) for in-flight imports before dropping
+  sockets. Smoke: an import racing suspend lands exactly once, before suspend
+  resolves.
+- **Share-under-suspension guard.** A first import while backgrounded mints the
+  swarm via `share()` — it must come up suspended, not live, or the vault's
+  flag and the actual sockets disagree until the next transition.
+- **Local-first under suspension.** A suspended vault still imports (Autobase
+  local append needs no network); only replication and the localhost
+  blob-server stall. Smoke: import-while-suspended, socket released, count
+  exact.
+- **Blob links survive resume.** blob-server 1.15 `_listen()` re-binds its
+  ORIGINAL port on resume and falls back to a fresh one only if that bind now
+  fails (`refreshLink()` exists for that case) — so original-photo links held
+  by the UI keep working across a background round trip. Smoke: fetching a
+  pre-suspension link is refused while suspended, then serves the same bytes
+  after resume.
+- **Finding — simultaneous resume is a dead zone.** Reconnection after resume
+  is driven by the resumer's own re-announce + re-query. Two peers resuming at
+  the same moment can each miss the other's records and idle until the next
+  topic refresh: measured on `hyperdht/testnet`, one-sided resume against a
+  live peer reconnects in ~26 ms; simultaneous resume showed no reconnect
+  after 60+ s. The smoke deliberately models the one-sided case (a phone
+  resumes into a world where some peer stayed up); the chapter's deep-dive
+  owns the simultaneous case (it is also why an always-on mirror — Part 9 —
+  earns its keep).

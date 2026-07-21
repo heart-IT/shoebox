@@ -64,6 +64,12 @@ class Vault {
     this.member = null // the active invite member
     this._count = null // computed lazily by ensureCount()
     this._counting = null // in-flight count scan, memoized so callers share it
+    // Mobile lifecycle (Ch8). Transitions are SERIALIZED through this queue: the
+    // OS can flip background/active faster than a transition completes, and a
+    // resume interleaving a half-done suspend leaves the swarm half-alive.
+    this.suspended = false
+    this._lifecycle = Promise.resolve()
+    this._imports = new Set() // in-flight imports, drained (bounded) on suspend
   }
 
   async ready () {
@@ -242,6 +248,10 @@ class Vault {
       this.base.replicate(conn)
     })
     this.swarm.join(this.base.discoveryKey, { server: true, client: true })
+    // A first import can land WHILE the app is backgrounded (Ch8 M3): the swarm
+    // it just minted must come up suspended, not live, or the vault's suspended
+    // state and the actual sockets disagree until the next transition.
+    if (this.suspended) { await this.swarm.suspend(); return }
     await this.swarm.flush().catch(() => {})
   }
 
@@ -288,7 +298,19 @@ class Vault {
     return z32.encode(invite) // z-base-32 of the ~66-byte invite (NOT a 32-byte key)
   }
 
+  // A suspend arriving mid-import waits (bounded) for the imports already in
+  // flight — this wrapper is what it waits on.
   async importPhoto (buffer, meta = {}) {
+    const inflight = this._importPhoto(buffer, meta)
+    this._imports.add(inflight)
+    try {
+      return await inflight
+    } finally {
+      this._imports.delete(inflight)
+    }
+  }
+
+  async _importPhoto (buffer, meta = {}) {
     // Reject empty blobs: hyperblobs does not advance byteOffset for a 0-byte
     // put, so the per-blob disambiguator would degenerate and two empty imports
     // with the same time+name could collide onto one key.
@@ -400,32 +422,72 @@ class Vault {
     return this.ensureCount()
   }
 
-  // Mobile background/foreground. Suspend the blob-server too, not just the
-  // swarm — otherwise its localhost TCP socket stays bound the whole time the
-  // app is backgrounded.
-  async suspend () {
-    if (this.pairing) await this.pairing.suspend()
-    if (this.swarm) await this.swarm.suspend()
-    if (this.server) await this.server.suspend()
+  // Mobile background/foreground (Ch8, Inv-10: suspension is not graceful
+  // shutdown). Both transitions run through one queue: the OS can fire
+  // background→active→background faster than a transition completes, and an
+  // unserialized resume can interleave a half-done suspend — ending foregrounded
+  // with a dead swarm, or backgrounded with a live socket. Each transition
+  // checks the flag INSIDE the queue, so a storm of flips collapses to no-ops.
+  _transition (fn) {
+    const run = this._lifecycle.then(fn, fn)
+    this._lifecycle = run.then(() => {}, () => {}) // a failed transition must not wedge the queue
+    return run
   }
 
+  // Suspend the blob-server too, not just the swarm — otherwise its localhost
+  // TCP socket stays bound the whole time the app is backgrounded. Before any
+  // socket drops, DRAIN in-flight imports (bounded): the reply to SUSPEND is
+  // the app's signal that the worker is quiescent, and the OS may freeze the
+  // process right after — a half-appended import must not be what it freezes.
+  // Bounded, not open-ended: past the deadline we suspend anyway and let the
+  // append finish or not — suspension is not graceful shutdown.
+  async suspend () {
+    return this._transition(async () => {
+      if (this.suspended) return
+      if (this._imports.size) {
+        await Promise.race([
+          Promise.allSettled([...this._imports]),
+          new Promise((res) => setTimeout(res, Vault.SUSPEND_DRAIN_MS)),
+        ])
+      }
+      if (this.pairing) await this.pairing.suspend()
+      if (this.swarm) await this.swarm.suspend()
+      if (this.server) await this.server.suspend()
+      this.suspended = true
+    })
+  }
+
+  // Mirror order of suspend. The blob-server re-binds its ORIGINAL port (it
+  // falls back to a fresh one only if the bind now fails), so links the UI is
+  // already holding normally survive a background/foreground round trip.
   async resume () {
-    if (this.server) await this.server.resume()
-    if (this.swarm) await this.swarm.resume()
-    if (this.pairing) await this.pairing.resume()
+    return this._transition(async () => {
+      if (!this.suspended) return
+      if (this.server) await this.server.resume()
+      if (this.swarm) await this.swarm.resume()
+      if (this.pairing) await this.pairing.resume()
+      this.suspended = false
+    })
   }
 
   async close () {
-    // Reverse dependency order, each guarded so one failure can't strand the
-    // rest: pairing → swarm → autobase (releases its core sessions) → blob-server,
-    // which owns the store we handed it and closes it in its own _close().
-    if (this.pairing) await this.pairing.close().catch(() => {})
-    if (this.swarm) await this.swarm.destroy().catch(() => {})
-    if (this.base) await this.base.close().catch(() => {})
-    if (this.server) await this.server.close().catch(() => {})
-    else await this.store.close().catch(() => {})
+    // Queued behind any in-flight suspend/resume — closing mid-transition would
+    // interleave two teardown orders over the same sockets.
+    return this._transition(async () => {
+      // Reverse dependency order, each guarded so one failure can't strand the
+      // rest: pairing → swarm → autobase (releases its core sessions) → blob-server,
+      // which owns the store we handed it and closes it in its own _close().
+      if (this.pairing) await this.pairing.close().catch(() => {})
+      if (this.swarm) await this.swarm.destroy().catch(() => {})
+      if (this.base) await this.base.close().catch(() => {})
+      if (this.server) await this.server.close().catch(() => {})
+      else await this.store.close().catch(() => {})
+    })
   }
 }
+
+// How long a suspend waits for in-flight imports before proceeding anyway.
+Vault.SUSPEND_DRAIN_MS = 5000
 
 // The CANDIDATE side of blind pairing — how a SECOND DEVICE joins an EXISTING
 // library (Ch7 M4). It's the mirror of the owner's createInvite(): open a
