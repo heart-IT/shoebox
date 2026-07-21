@@ -8,6 +8,13 @@
 // replicates every block — but as ciphertext, so its view stays EMPTY. That is
 // the point of the chapter: the album is private to key-holders. Pass the album
 // key (64-hex) to actually read it.
+//
+// Audit AF-M7: peek holds ONLY the album key (= the epoch-0 content key). After
+// a revocation the album rotates, and post-rotation photos are sealed under a
+// CONTENT key peek never receives (that needs a paired member's box keypair).
+// So peek reads the newest EPOCH-0 photo it can actually decrypt, and says so
+// if it had to skip rotated ones — instead of writing garbage bytes that the
+// album key "decrypts" into noise.
 // Usage: node peek.mjs <library-key> [album-key-hex] [out.jpg]
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -32,7 +39,9 @@ const isAlbumKey = maybeKey && /^[0-9a-fA-F]{64}$/.test(maybeKey)
 const encryptionKey = isAlbumKey ? Buffer.from(maybeKey, 'hex') : null
 const out = (isAlbumKey ? process.argv[4] : process.argv[3]) ?? path.join(os.tmpdir(), 'shoebox-peek.jpg')
 
-const store = new Corestore(path.join(os.tmpdir(), 'shoebox-peek-store'))
+// A UNIQUE store dir per run (AF-L): a fixed tmpdir path let two concurrent
+// peeks contend on one RocksDB lock.
+const store = new Corestore(fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-peek-')))
 const swarm = new Hyperswarm()
 
 const base = new Autobase(store, key, {
@@ -55,21 +64,35 @@ console.log(encryptionKey
 
 // Sync the log and rebuild the view. base.update() fetches what's AVAILABLE, so
 // we loop — each pass gives replication a real event-loop turn to deliver blocks.
+// We want the newest DECRYPTABLE photo: with only the album key that means
+// epoch 0 (or any epoch for an unencrypted library). Rotated photos are counted
+// but skipped — peek can't unseal their content key.
 const deadline = Date.now() + 45000
 let node = null
+let skippedRotated = 0
 while (Date.now() < deadline) {
   await base.update()
-  node = await base.view.photos.peek({ reverse: true }) // newest capture-time
+  skippedRotated = 0
+  for await (const item of base.view.photos.createReadStream({ reverse: true })) {
+    if (encryptionKey && (item.value.epoch || 0) > 0) { skippedRotated++; continue } // post-rotation → not decryptable here
+    node = item
+    break
+  }
   if (node) break
   await new Promise((r) => setTimeout(r, 100))
 }
 
 if (!node) {
-  console.error(encryptionKey
-    ? 'found no photos — is a device online and sharing the library?'
-    : 'found no photos — the album is likely ENCRYPTED. Re-run with the album key: node peek.mjs <library-key> <album-key-hex>. (Or no device is online.)')
+  if (encryptionKey && skippedRotated > 0) {
+    console.error(`this album has ROTATED: ${skippedRotated} photo(s) are sealed under a content key peek doesn't hold (that needs a paired member device). No epoch-0 photo to display.`)
+  } else {
+    console.error(encryptionKey
+      ? 'found no photos — is a device online and sharing the library?'
+      : 'found no photos — the album is likely ENCRYPTED. Re-run with the album key: node peek.mjs <library-key> <album-key-hex>. (Or no device is online.)')
+  }
   process.exit(1)
 }
+if (skippedRotated > 0) console.log(`(skipped ${skippedRotated} post-rotation photo(s) peek can't decrypt — showing the newest epoch-0 photo)`)
 
 const record = node.value
 const blobs = new Hyperblobs(store.get(encryptionKey

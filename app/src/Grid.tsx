@@ -38,10 +38,11 @@ export function Grid({ client }: { client: VaultClient }) {
     // record's base64 data: thumbnail and float32 embedding inline — and holds it
     // in state. Fine at demo scale (hundreds of photos); a real 10k+ library needs
     // a windowed/paginated LIST plus thumbnails served over the blob-server as
-    // URLs (like originals). Serving thumbs as blobs is blocked here by the
-    // append-only schema — a thumb-blob pointer adds ~5 optional fields, past the
-    // 7-field flag-byte cliff (see build-schema.mjs) — so it needs a nested-struct
-    // redesign, deliberately left for a later chapter.
+    // URLs (like originals). Moving thumbnails to blob pointers just means adding
+    // optional schema fields — safe under the append-only contract (Inv-4); the
+    // codegen handles >7 optional fields via variable-width flags (there is no
+    // "flag-byte cliff" — that earlier claim was wrong, see VERSIONS.md F4). It's
+    // deferred for RAM/pagination reasons, not a schema blocker.
     // residency: true → each record says whether its original is hot (local)
     // or cold (evicted; re-fetches from a peer on tap) — Ch9.
     client.list(1000, true).then(
@@ -93,7 +94,17 @@ export function Grid({ client }: { client: VaultClient }) {
         numColumns={COLS}
         keyExtractor={(p) => p.id}
         renderItem={({ item }) => (
-          <Pressable onPress={() => setOpen(item)} style={styles.cell}>
+          <Pressable
+            onPress={() => {
+              // Opening fetches the original via the blob-server, so it's hot
+              // now — clear the ❄ badge optimistically (Ch9/AF-L).
+              if (item.resident === false) {
+                setPhotos(ps => ps.map(p => (p.id === item.id ? { ...p, resident: true } : p)))
+              }
+              setOpen(item)
+            }}
+            style={styles.cell}
+          >
             {item.thumb ? (
               <Image source={{ uri: item.thumb }} style={styles.thumb} />
             ) : (

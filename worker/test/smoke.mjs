@@ -295,6 +295,7 @@ const outBase = new Autobase(outStore, encVault.base.key, { open: openView, appl
 await outBase.ready()
 const x1 = encVault.base.replicate(true); const x2 = outBase.replicate(false); x1.pipe(x2).pipe(x1)
 for (let i = 0; i < 150; i++) { await new Promise((res) => setImmediate(res)); await outBase.update() }
+// REVIEWER: privacy narrative flows 1-2 — data is end-to-end encrypted; a peer without the album key reads nothing.
 assert.ok(!(await outBase.view.photos.peek({ reverse: true })), 'a peer without the album key reads nothing (private)')
 x1.destroy(); x2.destroy(); await outBase.close(); await outStore.close(); await encVault.close()
 fs.rmSync(encDir, { recursive: true, force: true }); fs.rmSync(memDir, { recursive: true, force: true }); fs.rmSync(outDir, { recursive: true, force: true })
@@ -866,6 +867,7 @@ assert.equal(bpRes.status, 200, 'the ORIGINAL pages in from the mirror — the c
 assert.ok(Buffer.from(await bpRes.arrayBuffer()).equals(BIG2), 'paged-in bytes intact (M1\'s honest boundary, closed)')
 
 // The mirror held it all and could read none of it.
+// REVIEWER: privacy narrative flow 3 — the optional mirror stores only ciphertext (positive control above proves the grep detects plaintext).
 assert.ok(!dirContains(bpSrvDir, 'THUMB-COLD-MARKER'), 'the mirror\'s storage contains NO plaintext — blind means blind')
 
 // Mirrors follow the Ch8 lifecycle like everything else with sockets.
@@ -996,6 +998,7 @@ dtStranger.on('connection', (conn) => conn.on('error', () => {}))
 dtStranger.join(dtFounder.base.discoveryKey, { client: true, server: false })
 await dtStranger.flush().catch(() => {})
 for (let i = 0; i < 120; i++) { await new Promise((res) => setTimeout(res, 25)) }
+// REVIEWER: privacy narrative flow 4 — the DHT reveals no member addresses; a library-key-only holder finds nobody.
 assert.equal(dtStranger.connections.size, 0, 'a library-key-only stranger finds NOBODY on the legacy topic')
 await dtStranger.destroy()
 

@@ -770,3 +770,20 @@ the following. Fixes land in severity batches, each counterfactual-verified
   worker died/hung; a failed STAT poll now flags "⚠ worker not responding".
 - **AF-L:** `joinLibrary`/`inviteDevice` now honor the `busyRef` reentrancy
   guard (a Join mid-import used to close the vault under the running pump).
+
+### Batch 7 — desktop tools + doc nits
+
+- **AF-M7 (MEDIUM, completeness/correctness):** both desktop tools were
+  epoch-blind. `join.mjs` was rewritten to run the SAME `pairAsCandidate()` +
+  `Vault` path the phone uses — fixing three things at once: the box keypair now
+  comes from a persisted RANDOM seed (the old hardcoded `'shoebox-desktop-demo-
+  seed-000000'` let any repo reader unseal every rotated content key sealed to a
+  desktop member), imports are epoch-aware (no more epoch-0 Inv-9 bypass), and
+  GRANT_KEYS/rotation are handled by the Vault. `peek.mjs` now reads the newest
+  EPOCH-0 photo it can actually decrypt and reports skipped post-rotation photos,
+  instead of writing garbage the album key "decrypts" into noise.
+- **AF-L:** peek uses a unique per-run store dir (was a fixed tmpdir → lock
+  contention); the Grid ❄ badge clears when a tap pages a photo in; the Grid's
+  stale "7-field flag-byte cliff" comment is corrected to match F4; and the
+  privacy-narrative assertions the Part 10 draft references are now marked
+  `// REVIEWER:` in the smoke, making that claim literally true.
