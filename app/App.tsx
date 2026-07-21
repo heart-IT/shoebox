@@ -42,6 +42,7 @@ export default function App() {
   const [joinCode, setJoinCode] = useState('')
   const [showMembers, setShowMembers] = useState(false)
   const [members, setMembers] = useState<{ writerKey: string; role: string }[]>([])
+  const [storage, setStorage] = useState<{ photos: number; totalBytes: number; localBytes: number; coldBytes: number } | null>(null)
   const clientRef = useRef<VaultClient | null>(null)
   // Reentrancy guard: import buttons don't disable themselves, so a double-tap
   // (or tapping a second import mid-run) would interleave two batches into the
@@ -180,6 +181,36 @@ export default function App() {
       setStatus('member revoked — their future writes are blocked')
     } catch (e) {
       setStatus(`revoke failed: ${String(e)}`)
+    }
+  }
+
+  // The two tiers in numbers (Ch9): the index is small and always local; the
+  // originals are the storage story — hot (on this phone) vs cold (evicted,
+  // re-fetched from a peer or the blind mirror on tap).
+  const refreshStorage = async () => {
+    try {
+      setStorage(await clientRef.current!.storageStat())
+    } catch (e) {
+      setStatus(`storage failed: ${String(e)}`)
+    }
+  }
+
+  // Evict every locally-held original. The library does not shrink — records,
+  // thumbnails, and search stay; the full-resolution bytes come back on tap
+  // from whichever peer holds them (the grid marks cold photos with ❄).
+  const evictOriginals = async () => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setStatus('evicting originals…')
+    try {
+      const s = storage ?? (await clientRef.current!.storageStat())
+      const res = await clientRef.current!.evict({ bytes: s.localBytes })
+      setStorage(await clientRef.current!.storageStat())
+      setStatus(`evicted ${res.evicted} original(s) — ${(res.freedBytes / 1e6).toFixed(1)} MB returned to the OS; they re-fetch on tap`)
+    } catch (e) {
+      setStatus(`evict failed: ${String(e)}`)
+    } finally {
+      busyRef.current = false
     }
   }
 
@@ -334,6 +365,18 @@ export default function App() {
           <Button title="Join a library" onPress={joinLibrary} />
         </View>
         <Button title="Members" onPress={openMembers} />
+        <Button title="Storage" onPress={refreshStorage} />
+        {storage && (
+          <View style={styles.rollBox}>
+            <Text style={styles.rollCount}>
+              {storage.photos} photos · {(storage.totalBytes / 1e6).toFixed(1)} MB of originals
+            </Text>
+            <Text style={styles.rollLine}>
+              hot on this phone: {(storage.localBytes / 1e6).toFixed(1)} MB · cold: {(storage.coldBytes / 1e6).toFixed(1)} MB
+            </Text>
+            <Button title="Evict originals" onPress={evictOriginals} />
+          </View>
+        )}
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />
         <Button title={`Import + embed ${BATCH}`} onPress={importRollZeroCopy} />

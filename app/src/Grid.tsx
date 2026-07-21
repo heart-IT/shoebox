@@ -42,7 +42,9 @@ export function Grid({ client }: { client: VaultClient }) {
     // append-only schema — a thumb-blob pointer adds ~5 optional fields, past the
     // 7-field flag-byte cliff (see build-schema.mjs) — so it needs a nested-struct
     // redesign, deliberately left for a later chapter.
-    client.list(1000).then(
+    // residency: true → each record says whether its original is hot (local)
+    // or cold (evicted; re-fetches from a peer on tap) — Ch9.
+    client.list(1000, true).then(
       (p) => { setPhotos(p); setError(null) },
       (e) => setError(String(e)),
     )
@@ -99,6 +101,7 @@ export function Grid({ client }: { client: VaultClient }) {
                 <Text style={styles.noThumbText}>{item.mime.split('/')[1] || '?'}</Text>
               </View>
             )}
+            {item.resident === false && <Text style={styles.coldBadge}>❄</Text>}
           </Pressable>
         )}
       />
@@ -152,6 +155,9 @@ const styles = StyleSheet.create({
   count: { color: '#aaa', fontSize: 12, textAlign: 'center', paddingBottom: 6 },
   cell: { width: CELL, height: CELL, margin: GAP / 2 },
   thumb: { width: '100%', height: '100%', borderRadius: 3, backgroundColor: '#222' },
+  // Cold original (evicted): the thumbnail renders as always; the badge says
+  // the full-resolution bytes live on a peer until tapped.
+  coldBadge: { position: 'absolute', top: 3, right: 5, fontSize: 11, color: '#8ab4f8' },
   noThumb: { alignItems: 'center', justifyContent: 'center' },
   noThumbText: { color: '#777', fontSize: 11, fontFamily: 'Menlo' },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
