@@ -54,7 +54,9 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
   try {
     switch (req.command) {
       case CMD.STAT:
-        req.reply(json({ photos: await vault.count() }))
+        // Count plus the sync-health trio (Ch10 M3): peers / suspended /
+        // lastUpdateAt — so the UI can say "connected and moving" honestly.
+        req.reply(json({ photos: await vault.count(), ...vault.status() }))
         break
       case CMD.IMPORT: {
         // JSON payload — Movement 2's naive base64 path.

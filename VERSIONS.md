@@ -627,3 +627,18 @@ replicating ciphertext — strictly less signal to strangers.
 Boundary: the pairing INVITE still announces on its own blind-pairing topic
 (that's its job — a candidate must find the owner before it holds any key),
 and DHT-level traffic analysis is out of scope for a topic derivation.
+
+## Ch10 M3 — loud metrics for silent failures (2026-07-21)
+
+The failure class that kills trust in a no-server app is the one that makes no
+sound: a resume that reconnects nobody, a view that quietly stops advancing.
+`Vault.status()` now rides every STAT — `peers` (the pipe exists),
+`lastUpdateAt` (the library actually moved; stamped on every view advance,
+local or replicated), `suspended` (why it might not be moving) — and the app
+shows a permanent sync line ("N peer(s) · library moved Xs ago", 10 s poll).
+
+Honesty note baked into the smoke: even a "fresh" founder has already moved —
+ensureOwner()'s role claim advances the view during boot, and lastUpdateAt
+reports that too. After suspend, peers reads 0 (connections are genuinely
+destroyed) and suspended: true says why — the two numbers together distinguish
+"backgrounded" from "broken".

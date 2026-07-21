@@ -886,6 +886,39 @@ await dtFounder.close()
 await dtNet.destroy()
 fs.rmSync(dtFDir, { recursive: true, force: true })
 
+// Ch10 M3: LOUD METRICS. The failures that kill trust in a no-server app are
+// the silent ones — a resume that reconnects nobody, a view that quietly stops
+// advancing. status() rides every STAT: peers (the pipe exists), lastUpdateAt
+// (the library actually moved), suspended (why it might not be moving).
+const stNet = await createTestnet(3)
+const stDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-stat-'))
+const stVault = new Vault(stDir, { dhtBootstrap: stNet.bootstrap })
+await stVault.ready()
+const stFresh = stVault.status()
+assert.equal(stFresh.peers, 0, 'a fresh vault has no peers')
+assert.equal(stFresh.suspended, false, 'and reports itself live')
+// Even a "fresh" founder has already moved: ensureOwner()'s role claim
+// advanced the view during boot. lastUpdateAt reports THAT honestly too.
+assert.ok(stFresh.lastUpdateAt > 0, 'the founder\'s own role claim already stamped lastUpdateAt')
+await stVault.importPhoto(PNG_1PX, { name: 'tick.png', takenAt: 1000 })
+assert.ok(stVault.status().lastUpdateAt >= stFresh.lastUpdateAt, 'a view advance re-stamps lastUpdateAt — "moving" is a number, not a feeling')
+await stVault.share()
+const stPeer = new Hyperswarm({ bootstrap: stNet.bootstrap })
+stPeer.on('connection', (conn) => conn.on('error', () => {}))
+stPeer.join(stVault.base.discoveryKey, { client: true, server: false })
+for (let i = 0; i < 400 && stVault.status().peers === 0; i++) { await new Promise((res) => setTimeout(res, 25)) }
+assert.equal(stVault.status().peers, 1, 'a real connection shows up as peers: 1')
+await stVault.suspend()
+const stSuspended = stVault.status()
+assert.equal(stSuspended.suspended, true, 'suspension is reported, not hidden')
+assert.equal(stSuspended.peers, 0, 'and the destroyed connections read as peers: 0 — the honest number')
+await stVault.resume()
+assert.equal(stVault.status().suspended, false, 'resume flips the flag back')
+await stPeer.destroy()
+await stVault.close()
+await stNet.destroy()
+fs.rmSync(stDir, { recursive: true, force: true })
+
 // The oracle: near-duplicates first (grid-identical threshold), then oldest.
 const orDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-oracle-'))
 const orVault = new Vault(orDir)
@@ -903,4 +936,4 @@ assert.deepEqual(await orVault.evictionCandidates({}), [], 'no byte target → n
 await orVault.close()
 fs.rmSync(orDir, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle), key continuity (owner-reboot+late-joiner-grants+kicked-gains-nothing), private topic (derived≠public+stranger-finds-nobody+keyholder-connects) all verified')
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle), key continuity (owner-reboot+late-joiner-grants+kicked-gains-nothing), private topic (derived≠public+stranger-finds-nobody+keyholder-connects), loud metrics (peers+lastUpdateAt+suspended honest across lifecycle) all verified')

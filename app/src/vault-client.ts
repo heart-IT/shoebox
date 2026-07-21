@@ -86,7 +86,9 @@ export class VaultClient {
     return out
   }
 
-  stat(): Promise<{ photos: number }> {
+  // photos plus the sync-health trio (Ch10): peers (the pipe exists),
+  // lastUpdateAt (the library actually moved), suspended (why it might not be).
+  stat(): Promise<{ photos: number; peers: number; suspended: boolean; lastUpdateAt: number }> {
     return this.call(CMD.STAT)
   }
 

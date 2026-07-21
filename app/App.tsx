@@ -43,6 +43,9 @@ export default function App() {
   const [showMembers, setShowMembers] = useState(false)
   const [members, setMembers] = useState<{ writerKey: string; role: string }[]>([])
   const [storage, setStorage] = useState<{ photos: number; totalBytes: number; localBytes: number; coldBytes: number } | null>(null)
+  // Sync health (Ch10): silent failures become a visible line. Refreshed on a
+  // slow interval — this is a status readout, not a measurement.
+  const [sync, setSync] = useState<{ peers: number; suspended: boolean; lastUpdateAt: number } | null>(null)
   const clientRef = useRef<VaultClient | null>(null)
   // Reentrancy guard: import buttons don't disable themselves, so a double-tap
   // (or tapping a second import mid-run) would interleave two batches into the
@@ -65,10 +68,17 @@ export default function App() {
     const client = new VaultClient(worklet.IPC, msg => setStatus(`worker error: ${msg}`))
     clientRef.current = client
 
+    const takeStat = (s: { photos: number; peers: number; suspended: boolean; lastUpdateAt: number }) =>
+      setSync({ peers: s.peers, suspended: s.suspended, lastUpdateAt: s.lastUpdateAt })
     client
       .stat()
-      .then(s => setStatus(`vault ready — ${s.photos} photo(s)`))
+      .then(s => { setStatus(`vault ready — ${s.photos} photo(s)`); takeStat(s) })
       .catch(e => setStatus(`worker error: ${String(e)}`))
+    // A resume that reconnects nobody, or a view that stopped advancing, must
+    // not be a secret — poll the cheap STAT and keep the sync line honest.
+    const syncTimer = setInterval(() => {
+      clientRef.current?.stat().then(takeStat).catch(() => {})
+    }, 10000)
 
     // Forward the OS lifecycle to the worklet. On background, suspend the swarm
     // and the localhost blob-server socket — otherwise they stay open, iOS kills
@@ -89,6 +99,7 @@ export default function App() {
 
     return () => {
       sub.remove()
+      clearInterval(syncTimer)
       worklet.terminate()
     }
   }, [])
@@ -348,6 +359,15 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.title}>Shoebox</Text>
         <Text style={styles.status}>{status}</Text>
+        {sync && (
+          <Text style={styles.syncLine}>
+            {sync.suspended ? 'suspended' : `${sync.peers} peer(s)`}
+            {' · '}
+            {sync.lastUpdateAt
+              ? `library moved ${Math.max(0, Math.round((Date.now() - sync.lastUpdateAt) / 1000))}s ago`
+              : 'no sync yet'}
+          </Text>
+        )}
 
         <Button title="Show grid" onPress={() => setShowGrid(true)} />
         <Button title="Import one photo" onPress={importOne} />
@@ -442,6 +462,7 @@ const styles = StyleSheet.create({
   // Colors chosen to read on the OS dark theme (the default here); RN applies
   // no theme of its own, so light-gray text on the dark surface is deliberate.
   status: { fontSize: 14, color: '#aaa', textAlign: 'center', paddingHorizontal: 24 },
+  syncLine: { fontSize: 12, color: '#777', fontFamily: 'Menlo' },
   photo: { width: 192, height: 192, borderRadius: 8 },
   keyBox: { paddingHorizontal: 24, alignItems: 'center', gap: 4 },
   meterBox: { alignItems: 'center', gap: 2, paddingVertical: 4 },

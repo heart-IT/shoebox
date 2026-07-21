@@ -110,7 +110,10 @@ class Vault {
     // The cached photo count goes stale on ANY view advance, not just our own
     // imports — a photo replicated in from another writer, or a view rebuild after
     // reordering, must invalidate it too (importPhoto also invalidates eagerly).
-    this.base.on('update', () => { this._count = null; this._counting = null })
+    // lastUpdateAt is Ch10 M3: the timestamp of the last view advance, local or
+    // replicated — the number that makes a resume-that-never-syncs visible.
+    this.base.on('update', () => { this._count = null; this._counting = null; this.lastUpdateAt = Date.now() })
+    this.lastUpdateAt = 0
     // Epoch-0 blobs core — named 'photo-blobs', keyed by the album key (= epoch-0
     // content key), so it's byte-identical to the M1/M2 layout.
     this.blobs = await this._blobsForEpoch(0)
@@ -586,6 +589,19 @@ class Vault {
 
   async count () {
     return this.ensureCount()
+  }
+
+  // Ch10 M3: the numbers that make silent failures audible. `peers` says the
+  // pipe exists; `lastUpdateAt` says the library actually moved; `suspended`
+  // says why it might not be moving. A resume that reconnects nobody, or a
+  // foregrounded app whose view hasn't advanced in an hour, stops being a
+  // secret the moment these ride every STAT.
+  status () {
+    return {
+      peers: this.swarm ? this.swarm.connections.size : 0,
+      suspended: this.suspended,
+      lastUpdateAt: this.lastUpdateAt || 0,
+    }
   }
 
   // Mobile background/foreground (Ch8, Inv-10: suspension is not graceful
