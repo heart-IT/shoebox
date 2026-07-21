@@ -634,4 +634,85 @@ const childDies = spawnSync(process.execPath, ['-e', `
 assert.notEqual(childDies.status, 0, 'the SAME benign throw with the window closed is fatal — the filter never outlives its window')
 assert.ok(!childDies.stdout.includes('survived'), 'the out-of-window process died before its timer')
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level) all verified')
+// Ch9 M1: TIERED RETENTION (Inv-11). The index — records, thumbnails,
+// embeddings — is the library and stays local forever; the ORIGINAL is a cache
+// entry. Sparse replication means bytes only ever move on demand, so a
+// replicated record starts COLD; a tap pages it in from a peer; evict() hands
+// the blocks back to the OS; the record (and the whole browsable, searchable
+// library) is untouched. Plus the eviction oracle: near-duplicates first (the
+// Part 4 dHash column paying rent), then oldest.
+const evNet = await createTestnet(3)
+const evFDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-evF-'))
+const evFounder = new Vault(evFDir, { dhtBootstrap: evNet.bootstrap })
+await evFounder.ready()
+const BIG = Buffer.from(crypto.randomBytes(65536))
+await evFounder.importPhoto(BIG, { name: 'orig.bin', takenAt: 1000, thumb: 'THUMB-ORIG' })
+await evFounder.share()
+const evMDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-evM-'))
+const evMember = new Vault(evMDir, { bootstrap: idEncoding.encode(evFounder.base.key), dhtBootstrap: evNet.bootstrap })
+await evMember.ready()
+await evMember.share()
+
+// Replication brought the INDEX, not the bytes: the record is here, the
+// thumbnail reads, and the original is cold — nobody asked for it yet.
+let evRec = null
+for (let i = 0; i < 800 && !evRec; i++) { await new Promise((res) => setTimeout(res, 25)); evRec = (await evMember.list({ limit: 10, residency: true })).find((p) => p.name === 'orig.bin') }
+assert.ok(evRec, 'the record replicated to the member')
+assert.equal(evRec.thumb, 'THUMB-ORIG', 'the thumbnail is in the index tier — always local')
+assert.equal(evRec.resident, false, 'the original starts COLD — sparse replication moves bytes only on demand')
+
+// A tap pages the original in from the founder.
+const evRes = await fetch(evRec.link)
+assert.equal(evRes.status, 200, 'a cold original serves — the blob-server demand-fetches from a peer')
+assert.ok(Buffer.from(await evRes.arrayBuffer()).equals(BIG), 'and the paged-in bytes are intact')
+evRec = (await evMember.list({ limit: 10, residency: true })).find((p) => p.name === 'orig.bin')
+assert.equal(evRec.resident, true, 'after the tap the original is hot')
+assert.equal((await evMember.storageStat()).localBytes, BIG.byteLength, 'storageStat counts the hot original')
+
+// Evict: the bytes go back to the OS; the library does not shrink.
+const evOut = await evMember.evict([evRec.id])
+assert.deepEqual(evOut, { evicted: 1, freedBytes: BIG.byteLength }, 'evict() clears the blob blocks and reports the freed bytes')
+const evStat = await evMember.storageStat()
+assert.equal(evStat.photos, 1, 'the library did not shrink — eviction touches bytes, not records')
+assert.equal(evStat.localBytes, 0, 'no hot originals remain')
+assert.equal(evStat.coldBytes, BIG.byteLength, 'the original is accounted cold')
+evRec = (await evMember.list({ limit: 10, residency: true })).find((p) => p.name === 'orig.bin')
+assert.equal(evRec.resident, false, 'the record marks itself cold')
+assert.equal(evRec.thumb, 'THUMB-ORIG', 'the thumbnail survives eviction — the index tier is never evicted')
+assert.deepEqual(await evMember.evict([evRec.id]), { evicted: 0, freedBytes: 0 }, 'evicting a cold record is an idempotent no-op')
+
+// Cold is not gone: the same link pages the original back in on demand.
+const evRes2 = await fetch(evRec.link)
+assert.equal(evRes2.status, 200, 'an evicted original re-fetches on demand while a peer holds it')
+assert.ok(Buffer.from(await evRes2.arrayBuffer()).equals(BIG), 'round-trip bytes intact after evict + re-fetch')
+
+// Evict again and take the peer away: the index still reads — the original is
+// simply unreachable until SOME peer holds it. That gap is what the blind
+// mirror (M2) exists to close.
+await evMember.evict([evRec.id])
+await evFounder.close()
+evRec = (await evMember.list({ limit: 10, residency: true })).find((p) => p.name === 'orig.bin')
+assert.equal(evRec.thumb, 'THUMB-ORIG', 'with the only peer gone, the library still browses (index tier)')
+assert.equal(evRec.resident, false, 'and the original is honestly cold, not silently missing')
+await evMember.close()
+await evNet.destroy()
+fs.rmSync(evFDir, { recursive: true, force: true }); fs.rmSync(evMDir, { recursive: true, force: true })
+
+// The oracle: near-duplicates first (grid-identical threshold), then oldest.
+const orDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-oracle-'))
+const orVault = new Vault(orDir)
+await orVault.ready()
+await orVault.importPhoto(PNG_1PX, { name: 'keeper.png', takenAt: 1000, dhash: '00ff00ff00ff00ff' })
+await orVault.importPhoto(PNG_1PX, { name: 'dupA.png', takenAt: 2000, dhash: 'ffffffffffffffff' })
+await orVault.importPhoto(PNG_1PX_RED, { name: 'dupB.png', takenAt: 3000, dhash: 'fffffffffffffffe' }) // hamming 1 from dupA
+const orRecs = await orVault.list({ limit: 10, reverse: false })
+const orId = (name) => orRecs.find((r) => r.name === name).id
+const orOne = await orVault.evictionCandidates({ bytes: 1 })
+assert.deepEqual(orOne, [orId('dupB.png')], 'the oracle evicts the near-duplicate first — never the only copy of a scene')
+const orAll = await orVault.evictionCandidates({ bytes: 1e9 })
+assert.deepEqual(orAll, [orId('dupB.png'), orId('keeper.png'), orId('dupA.png')], 'then oldest-first for the rest')
+assert.deepEqual(await orVault.evictionCandidates({}), [], 'no byte target → no candidates (eviction is never implicit)')
+await orVault.close()
+fs.rmSync(orDir, { recursive: true, force: true })
+
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle) all verified')

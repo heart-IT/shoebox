@@ -35,7 +35,7 @@ async function withThumb (bytes, meta) {
 
 // bare-rpc encodes the command as a uint on the wire — commands are integers,
 // not strings. This map is the wire contract; the app mirrors it exactly.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11, EVICT: 12, STORAGE_STAT: 13 }
 
 let vault = null
 // The device's boot context — seed-derived identity + paths — computed once in
@@ -87,8 +87,8 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         // A time-ordered window for the grid — records only, no bytes. Map to
         // an app-clean shape (the blobs-core key is a Buffer; the URL already
         // encodes it, so it never crosses to the UI).
-        const { limit } = req.data && req.data.byteLength ? JSON.parse(b4a.toString(req.data)) : {}
-        const records = await vault.list({ limit: limit || 200, reverse: true })
+        const { limit, residency } = req.data && req.data.byteLength ? JSON.parse(b4a.toString(req.data)) : {}
+        const records = await vault.list({ limit: limit || 200, reverse: true, residency: !!residency })
         const photos = records.map((r) => ({
           id: r.id, // stable, unique — the app's list key
           name: r.name, takenAt: r.takenAt, mime: r.mime,
@@ -96,10 +96,23 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
           thumb: r.thumb || '', dhash: r.dhash || '', link: r.link,
           // float32 embedding as base64 (empty if not indexed yet).
           embedding: r.embedding ? b4a.toString(r.embedding, 'base64') : '',
+          // hot (bytes local) or cold (evicted / never fetched) — Ch9 M1.
+          ...(residency ? { resident: !!r.resident } : {}),
         }))
         req.reply(json({ photos }))
         break
       }
+      case CMD.EVICT: {
+        // Evict originals (Ch9 M1): explicit ids, or let the oracle pick
+        // near-duplicates-then-oldest until `bytes` worth are covered.
+        const { ids, bytes } = req.data && req.data.byteLength ? JSON.parse(b4a.toString(req.data)) : {}
+        const targets = ids && ids.length ? ids : await vault.evictionCandidates({ bytes: bytes || 0 })
+        req.reply(json(await vault.evict(targets)))
+        break
+      }
+      case CMD.STORAGE_STAT:
+        req.reply(json(await vault.storageStat()))
+        break
       case CMD.SUSPEND:
         // Window opens BEFORE the teardown starts — the first dead-socket throw
         // can arrive while suspend is still dropping connections.

@@ -14,7 +14,7 @@ export interface ImportResult {
 // bare-rpc encodes the command as a uint — integers, not strings. Mirrors the
 // worker's CMD map exactly (worker/index.js). ERROR is a worker→app EVENT (the
 // worker emits it if boot fails), not a request.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10, JOIN: 11 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10, JOIN: 11, EVICT: 12, STORAGE_STAT: 13 }
 // A worklet that never replies (e.g. a boot hang) must not leave a promise
 // pending forever — every request is raced against this deadline.
 const RPC_TIMEOUT_MS = 20000
@@ -35,6 +35,7 @@ export interface PhotoRecord {
   dhash: string
   embedding: string // base64 float32, empty until indexed
   link: string
+  resident?: boolean // Ch9: original bytes local (hot) or evicted/cold — only when list() asked for residency
 }
 
 // Hamming distance between two 16-hex dHashes (0 = identical). Near-duplicate
@@ -115,9 +116,22 @@ export class VaultClient {
     return out
   }
 
-  async list(limit = 200): Promise<PhotoRecord[]> {
-    const out = await this.call(CMD.LIST, { limit })
+  async list(limit = 200, residency = false): Promise<PhotoRecord[]> {
+    const out = await this.call(CMD.LIST, { limit, residency })
     return out.photos
+  }
+
+  // Ch9: evict originals — explicit ids, or let the worker's oracle pick
+  // near-duplicates-then-oldest until `bytes` worth of originals are covered.
+  // The index (thumbnails, search) is untouched; cold originals re-fetch from
+  // peers on tap.
+  evict(opts: { ids?: string[]; bytes?: number }): Promise<{ evicted: number; freedBytes: number }> {
+    return this.call(CMD.EVICT, opts)
+  }
+
+  // Ch9: the two tiers in numbers — hot (local) vs cold original bytes.
+  storageStat(): Promise<{ photos: number; totalBytes: number; localBytes: number; coldBytes: number }> {
+    return this.call(CMD.STORAGE_STAT)
   }
 
   // Mobile lifecycle: the host forwards OS background/foreground here so the

@@ -24,6 +24,21 @@ function mimeFor (name) {
   return MIME[ext] || 'application/octet-stream'
 }
 
+// Near-duplicate parameters for the eviction oracle — MIRRORS the grid's
+// (app/src/Grid.tsx): same threshold, same degenerate all-zero exclusion, so
+// "evict near-duplicates first" evicts exactly what the UI calls a duplicate.
+const NEAR_DUP_HAMMING = 12
+const DEGENERATE_DHASH = '0000000000000000'
+function hammingHex (a, b) {
+  if (!a || !b || a.length !== b.length) return 64
+  let d = 0
+  for (let i = 0; i < a.length; i++) {
+    let x = (parseInt(a[i], 16) ^ parseInt(b[i], 16)) & 0xf
+    while (x) { d += x & 1; x >>= 1 }
+  }
+  return d
+}
+
 class Vault {
   // `bootstrap` (a library key, z-base-32) joins an EXISTING library as a second
   // device (Ch5 M3); null founds a new one (this device becomes the first writer).
@@ -361,11 +376,110 @@ class Vault {
   }
 
   // A time-ordered window over the view. reverse => newest first (the grid).
-  async list ({ limit = 100, reverse = true } = {}) {
+  // residency: true additionally marks each record hot/cold (Ch9 M1) — whether
+  // its ORIGINAL bytes are locally present or evicted/never-fetched.
+  async list ({ limit = 100, reverse = true, residency = false } = {}) {
     await this._syncContentKeys()
     const out = []
     for await (const { key, value } of this.view.createReadStream({ reverse, limit })) {
       out.push(this.decorate(value, key))
+    }
+    if (residency) await this._markResidency(out)
+    return out
+  }
+
+  // Ch9 M1: TIERED RETENTION (Inv-11). The INDEX — records, thumbnails,
+  // embeddings — is the library and stays local forever. The ORIGINAL is a
+  // cache entry: sparse replication means its bytes were only ever fetched on
+  // demand, and core.clear() hands them back. The record keeps its blob
+  // coordinates, so nothing in the view changes on eviction — a cold original
+  // re-fetches from any peer that holds it the next time it's asked for.
+
+  // Mark each record resident (bytes locally present) or cold. Grouped by blob
+  // core so a 200-record window opens each core once, not 200 times.
+  async _markResidency (records) {
+    const byCore = new Map()
+    for (const r of records) {
+      const hex = b4a.toString(r.blobsCoreKey, 'hex')
+      if (!byCore.has(hex)) byCore.set(hex, [])
+      byCore.get(hex).push(r)
+    }
+    for (const [hex, recs] of byCore) {
+      const core = this.store.get({ key: b4a.from(hex, 'hex') })
+      await core.ready()
+      try {
+        for (const r of recs) r.resident = await core.has(r.blockOffset, r.blockOffset + r.blockLength)
+      } finally {
+        await core.close()
+      }
+    }
+  }
+
+  // Evict originals by record id: clear the blob blocks from local storage.
+  // The record — thumbnail, metadata, embedding — is untouched; the library
+  // stays browsable and searchable, only the full-resolution bytes go cold.
+  // Idempotent: already-cold records are skipped, not errors.
+  async evict (ids) {
+    let evicted = 0
+    let freedBytes = 0
+    for (const idHex of ids) {
+      const node = await this.view.get(b4a.from(idHex, 'hex'))
+      if (!node) continue
+      const r = node.value
+      const core = this.store.get({ key: r.blobsCoreKey })
+      await core.ready()
+      try {
+        if (!(await core.has(r.blockOffset, r.blockOffset + r.blockLength))) continue
+        await core.clear(r.blockOffset, r.blockOffset + r.blockLength)
+        evicted++
+        freedBytes += r.byteLength
+      } finally {
+        await core.close()
+      }
+    }
+    return { evicted, freedBytes }
+  }
+
+  // The two tiers in numbers: how much of the library's original bytes are
+  // local (hot) vs evicted/never-fetched (cold). The index itself is small and
+  // always local — it's not what fills a 64 GB phone.
+  async storageStat () {
+    await this.base.update()
+    const recs = []
+    for await (const { key, value } of this.view.createReadStream()) {
+      recs.push({ ...value, id: b4a.toString(key, 'hex') })
+    }
+    await this._markResidency(recs)
+    let totalBytes = 0
+    let localBytes = 0
+    for (const r of recs) {
+      totalBytes += r.byteLength
+      if (r.resident) localBytes += r.byteLength
+    }
+    return { photos: recs.length, totalBytes, localBytes, coldBytes: totalBytes - localBytes }
+  }
+
+  // The priority oracle (the Part 4 index paying rent): near-duplicates first —
+  // a photo whose dHash sits within the grid's own NEAR_DUP threshold of an
+  // earlier photo is the cheapest thing to lose — then oldest-first. Returns
+  // resident record ids until `bytes` worth of originals are covered.
+  async evictionCandidates ({ bytes = 0 } = {}) {
+    if (!bytes) return []
+    const recs = (await this.list({ limit: 1000, reverse: false, residency: true })).filter((r) => r.resident)
+    const seen = []
+    const dupIds = new Set()
+    for (const r of recs) {
+      if (!r.dhash || r.dhash === DEGENERATE_DHASH) continue
+      if (seen.some((s) => hammingHex(s, r.dhash) <= NEAR_DUP_HAMMING)) dupIds.add(r.id)
+      else seen.push(r.dhash)
+    }
+    const ordered = [...recs.filter((r) => dupIds.has(r.id)), ...recs.filter((r) => !dupIds.has(r.id))]
+    const out = []
+    let covered = 0
+    for (const r of ordered) {
+      if (covered >= bytes) break
+      out.push(r.id)
+      covered += r.byteLength
     }
     return out
   }

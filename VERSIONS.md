@@ -519,3 +519,31 @@ lifecycle instead of the happy path.
   and excludes parked time: the reading measures the import, not the pocket.
 - Device verification (background a 30-photo batch mid-run, re-focus, reading
   sane, no reclaim crash) is the chapter's device-soak territory.
+
+## Ch09 M1 — tiered retention: evict originals, keep the index (2026-07-21)
+
+Inv-11: append-only storage grows monotonically until forced otherwise. The
+forcing is `core.clear(start, end)` on BLOB cores only — the plan's scary
+version (hypercore-11 mark-and-sweep against a live Hyperbee, atoms for
+evict+pointer atomicity) dissolves in this architecture:
+
+- **The bee is never evicted.** Records, thumbnails, and embeddings are the
+  index tier — small, always local. Eviction touches only original bytes in
+  blob cores, and the record keeps its blob coordinates, so nothing in the
+  view changes: no pointer update, no atomicity problem, no node-cache/sweep
+  interaction. Pure local storage reclaim.
+- **Cold is the natural state.** Sparse replication already moves blob bytes
+  on demand only — a freshly replicated record starts cold (smoke asserts
+  this), a tap pages it in through the blob-server, `evict()` just returns a
+  record to that state. `resident` (range `core.has`) surfaces hot/cold to the
+  UI; `storageStat()` totals the tiers.
+- **The oracle.** `evictionCandidates({ bytes })`: near-duplicates first —
+  same dHash threshold (12) and degenerate-hash exclusion as the grid, so the
+  worker evicts exactly what the UI calls a duplicate — then oldest-first.
+  No byte target → no candidates: eviction is never implicit.
+- **Honest boundary:** an evicted original is unreachable until SOME peer
+  holds it (smoke: index still browses with the only peer gone; the record is
+  cold, not silently missing). The policy answer — evict only what an
+  always-on mirror holds — is M2's job.
+- Wire contract: `EVICT: 12`, `STORAGE_STAT: 13` appended (ids are
+  load-bearing, never renumbered); `LIST` gains an opt-in `residency` flag.
