@@ -157,6 +157,24 @@ fs.rmSync(fDir, { recursive: true, force: true }); fs.rmSync(rDir, { recursive: 
 const idSeed = b4a.from('22'.repeat(32), 'hex')
 assert.ok(b4a.equals(primaryKeyFromSeed(idSeed), primaryKeyFromSeed(idSeed)), 'primaryKeyFromSeed is deterministic')
 assert.equal(primaryKeyFromSeed(idSeed).byteLength, 32, 'primary key is 32 bytes')
+
+// Audit AF-M12: persisted key artifacts fail LOUD on corruption instead of
+// silently re-minting an identity / re-founding over a joined store.
+const { loadOrCreateSeed } = require('../identity')
+const m12dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-m12-'))
+const m12seedPath = path.join(m12dir, 'seed')
+const m12seed = loadOrCreateSeed(fs, m12seedPath) // first boot mints
+assert.equal(m12seed.byteLength, 32, 'first boot mints a 32-byte seed')
+assert.ok(b4a.equals(loadOrCreateSeed(fs, m12seedPath), m12seed), 'a second boot returns the SAME persisted seed (atomic round-trip)')
+fs.writeFileSync(m12seedPath, b4a.from('deadbeef', 'hex')) // truncate it
+assert.throws(() => loadOrCreateSeed(fs, m12seedPath), /corrupt/, 'AF-M12: a corrupt seed throws — never silently overwrites the identity')
+const m12memPath = path.join(m12dir, 'membership')
+assert.equal(loadMembership(fs, m12memPath), null, 'an ABSENT membership file → founder (null), not an error')
+saveMembership(fs, m12memPath, { libraryKey: b4a.alloc(32, 1), albumKey: b4a.alloc(32, 2) })
+assert.ok(loadMembership(fs, m12memPath), 'a valid membership round-trips')
+fs.writeFileSync(m12memPath, b4a.alloc(10)) // truncate it
+assert.throws(() => loadMembership(fs, m12memPath), /corrupt/, 'AF-M12: a corrupt membership throws — never boots as a fresh founder over the joined store')
+fs.rmSync(m12dir, { recursive: true, force: true })
 const idA = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-idA-'))
 const va = new Vault(idA, { primaryKey: primaryKeyFromSeed(idSeed) })
 await va.ready()

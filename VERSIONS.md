@@ -730,3 +730,24 @@ the following. Fixes land in severity batches, each counterfactual-verified
 - **AF-M11 (MEDIUM, production):** `core.ready()` moved INSIDE the try in
   `_markResidency`/`evict` (and the oracle scan), so a ready/has failure on a
   corrupt or forged core closes the session instead of leaking one per scan.
+
+### Batch 5 — identity / persistence robustness
+
+- **AF-H3 (HIGH→CRITICAL, production):** a null `documentsPath()` (native paths
+  module not registered) silently sent the seed, membership, and all cores to a
+  PURGEABLE tmpdir. The app now surfaces a loud "storage is TEMPORARY" warning
+  and no longer pretends the fallback is harmless; `paths.ts` documents that the
+  caller must react to null.
+- **AF-M12 (MEDIUM→HIGH, correctness/production):** `loadOrCreateSeed` treated
+  ANY read failure (and any wrong length) as "first boot" and overwrote the
+  seed; `loadMembership` treated a truncated file as "founder". Both are now
+  distinguished: a genuinely-absent file behaves as before, but a
+  present-but-wrong-length artifact throws LOUD (never silently re-mints an
+  identity or re-founds over a joined store). Writes are atomic (temp + rename),
+  so a crash/disk-full mid-write can't create the truncated file in the first
+  place. Smoke: `AF-M12`.
+- **AF-H5 (partial):** artifacts are written with owner-only perms (0o600) where
+  the host supports `chmodSync`. The full at-rest story — platform keychain
+  (iOS Keychain / Android Keystore) for the seed and a 24-word mnemonic backup
+  — remains native work (a documented future chapter), and stays a ship-blocker
+  for the "data collected: none" claim until done.

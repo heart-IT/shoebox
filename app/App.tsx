@@ -61,8 +61,16 @@ export default function App() {
 
   useEffect(() => {
     const worklet = new Worklet()
-    // Filename must end in .bundle; argv[0] is the storage base.
-    worklet.start('/worker.bundle', bundle, [documentsPath() ?? ''])
+    // Filename must end in .bundle; argv[0] is the storage base. AF-H3: if the
+    // native paths module isn't registered the base is null and the worker
+    // falls back to a PURGEABLE tmpdir — surface that loudly instead of silently
+    // storing identity + library where the OS can sweep them.
+    const storageBase = documentsPath()
+    const ephemeral = storageBase === null
+    if (ephemeral) {
+      setStatus('⚠ storage unavailable (native paths module not registered) — data is TEMPORARY and may be lost. Rebuild the native app.')
+    }
+    worklet.start('/worker.bundle', bundle, [storageBase ?? ''])
 
     // Surface a failed/dead worker instead of a stale "vault ready".
     const client = new VaultClient(worklet.IPC, msg => setStatus(`worker error: ${msg}`))
@@ -72,7 +80,7 @@ export default function App() {
       setSync({ peers: s.peers, suspended: s.suspended, lastUpdateAt: s.lastUpdateAt })
     client
       .stat()
-      .then(s => { setStatus(`vault ready — ${s.photos} photo(s)`); takeStat(s) })
+      .then(s => { if (!ephemeral) setStatus(`vault ready — ${s.photos} photo(s)`); takeStat(s) })
       .catch(e => setStatus(`worker error: ${String(e)}`))
     // A resume that reconnects nobody, or a view that stopped advancing, must
     // not be a secret — poll the cheap STAT and keep the sync line honest.
