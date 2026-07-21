@@ -191,6 +191,10 @@ async function main () {
   const { memberBoxKeyFromSeed } = require('./rotation')
 
   const base = Bare.argv[0] || os.tmpdir()
+  // Optional second arg: the z32 key of a self-run blind peer (Ch9 M2) — the
+  // always-on box that mirrors this library as ciphertext. No key, no mirror;
+  // availability is then only as good as the other devices' uptime.
+  const blindPeerArg = Bare.argv[1] || null
   // The device identity seed — minted once, persisted, the root every core
   // descends from. It seeds both the device's keys (primaryKey) and the album's
   // encryption key. (A later chapter backs it up as a mnemonic and moves it into
@@ -207,6 +211,7 @@ async function main () {
     primaryKey: primaryKeyFromSeed(seed),
     founderAlbumKey: encryptionKeyFromSeed(seed),
     boxKeyPair: memberBoxKeyFromSeed(seed), // opens content keys sealed to us on rotation (Ch7 M3)
+    blindPeerKeys: blindPeerArg ? [idEncoding.decode(blindPeerArg)] : null,
   }
   await bootVault()
 }
@@ -225,6 +230,7 @@ async function bootVault () {
       bootstrap: idEncoding.encode(membership.libraryKey),
       encryptionKey: b4a.from(membership.albumKey),
       boxKeyPair: ctx.boxKeyPair,
+      blindPeerKeys: ctx.blindPeerKeys,
     })
     await vault.ready()
     await vault.share()
@@ -233,6 +239,7 @@ async function bootVault () {
       primaryKey: ctx.primaryKey,
       encryptionKey: ctx.founderAlbumKey,
       boxKeyPair: ctx.boxKeyPair,
+      blindPeerKeys: ctx.blindPeerKeys,
     })
     await vault.ready()
   }

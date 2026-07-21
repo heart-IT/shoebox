@@ -12,6 +12,8 @@ const Autobase = require('autobase')
 const BlobServer = require('hypercore-blob-server')
 const Hyperswarm = require('hyperswarm')
 const BlindPairing = require('blind-pairing')
+const BlindPeering = require('blind-peering')
+const Wakeup = require('protomux-wakeup')
 const idEncoding = require('hypercore-id-encoding')
 const z32 = require('z32') // invites are variable-length, not 32-byte keys
 const b4a = require('b4a')
@@ -42,7 +44,7 @@ function hammingHex (a, b) {
 class Vault {
   // `bootstrap` (a library key, z-base-32) joins an EXISTING library as a second
   // device (Ch5 M3); null founds a new one (this device becomes the first writer).
-  constructor (storagePath, { bootstrap = null, primaryKey = null, encryptionKey = null, boxKeyPair = null, dhtBootstrap = null } = {}) {
+  constructor (storagePath, { bootstrap = null, primaryKey = null, encryptionKey = null, boxKeyPair = null, dhtBootstrap = null, blindPeerKeys = null } = {}) {
     // A seed-derived primaryKey makes every core — including this device's
     // Autobase writer key — a pure function of the device seed, so it's
     // recoverable. `unsafe: true` acknowledges we manage the key deliberately
@@ -85,6 +87,13 @@ class Vault {
     this.suspended = false
     this._lifecycle = Promise.resolve()
     this._imports = new Set() // in-flight imports, drained (bounded) on suspend
+    // Ch9 M2: the always-on cold tier. Keys of blind peers that mirror this
+    // library's cores — holding ciphertext they cannot read (the album key
+    // never reaches them). No keys → no mirrors contacted, availability stays
+    // "works while my other device is awake".
+    this.blindPeerKeys = blindPeerKeys
+    this.blind = null // BlindPeering client, created with the swarm in share()
+    this.wakeup = null
   }
 
   async ready () {
@@ -131,6 +140,9 @@ class Vault {
     this._coreContentKey.set(b4a.toString(core.key, 'hex'), ck || this.encryptionKey)
     const blobs = new Hyperblobs(core)
     this.blobsByEpoch.set(epoch, blobs)
+    // A rotation minted a fresh blob core mid-flight — the mirror must hold it
+    // too, or post-rotation originals have no cold tier (Ch9 M2).
+    if (this.blind) this.blind.addCoreBackground(core, { referrer: this.base.key })
     return blobs
   }
 
@@ -260,9 +272,28 @@ class Vault {
       // A transport error on one peer must never bubble to an unhandled rejection
       // and take down the worker; secret-stream self-heals the connection.
       conn.on('error', () => {})
+      if (this.wakeup) this.wakeup.addStream(conn) // mirror hints ride every connection
       this.base.replicate(conn)
     })
     this.swarm.join(this.base.discoveryKey, { server: true, client: true })
+    // Ch9 M2: register with the blind mirrors. The client rides the swarm's
+    // DHT and connects to each mirror DIRECTLY by key (no topic involved); the
+    // mirror replicates the log, the views, and the blob cores as ciphertext —
+    // the album key never leaves the members. Background variants only: mirror
+    // registration is best-effort and must never block boot or an import.
+    if (this.blindPeerKeys && this.blindPeerKeys.length) {
+      this.wakeup = new Wakeup(() => { this.base.update().catch(() => {}) })
+      this.blind = new BlindPeering(this.swarm.dht, this.store, {
+        wakeup: this.wakeup,
+        keys: this.blindPeerKeys,
+        pick: 1,
+        suspended: this.suspended, // a client minted mid-background starts suspended
+      })
+      this.blind.addAutobaseBackground(this.base)
+      for (const blobs of this.blobsByEpoch.values()) {
+        this.blind.addCoreBackground(blobs.core, { referrer: this.base.key })
+      }
+    }
     // A first import can land WHILE the app is backgrounded (Ch8 M3): the swarm
     // it just minted must come up suspended, not live, or the vault's suspended
     // state and the actual sockets disagree until the next transition.
@@ -564,6 +595,7 @@ class Vault {
           new Promise((res) => setTimeout(res, Vault.SUSPEND_DRAIN_MS)),
         ])
       }
+      if (this.blind) await this.blind.suspend() // mirror RPC state first, while the DHT is still up
       if (this.pairing) await this.pairing.suspend()
       if (this.swarm) await this.swarm.suspend()
       if (this.server) await this.server.suspend()
@@ -580,6 +612,7 @@ class Vault {
       if (this.server) await this.server.resume()
       if (this.swarm) await this.swarm.resume()
       if (this.pairing) await this.pairing.resume()
+      if (this.blind) this.blind.resume() // needs the DHT back first
       this.suspended = false
     })
   }
@@ -589,8 +622,10 @@ class Vault {
     // interleave two teardown orders over the same sockets.
     return this._transition(async () => {
       // Reverse dependency order, each guarded so one failure can't strand the
-      // rest: pairing → swarm → autobase (releases its core sessions) → blob-server,
-      // which owns the store we handed it and closes it in its own _close().
+      // rest: mirror client → pairing → swarm → autobase (releases its core
+      // sessions) → blob-server, which owns the store we handed it and closes
+      // it in its own _close().
+      if (this.blind) { try { this.blind.close() } catch { /* best effort */ } }
       if (this.pairing) await this.pairing.close().catch(() => {})
       if (this.swarm) await this.swarm.destroy().catch(() => {})
       if (this.base) await this.base.close().catch(() => {})

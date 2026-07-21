@@ -547,3 +547,35 @@ evict+pointer atomicity) dissolves in this architecture:
   always-on mirror holds — is M2's job.
 - Wire contract: `EVICT: 12`, `STORAGE_STAT: 13` appended (ids are
   load-bearing, never renumbered); `LIST` gains an opt-in `residency` flag.
+
+## Ch09 M2 — the blind peer: an always-on cold tier that reads nothing (2026-07-21)
+
+New pins (constructor shapes validated against installed source per the
+standing decision — the two packages' READMEs have historically disagreed):
+
+| Package | Version | Validated surface |
+|---------|---------|-------------------|
+| blind-peering | 2.4.1 | client is `new BlindPeering(dht, store, { wakeup, keys, pick, suspended })` — DHT not swarm; `keys` REQUIRED or it silently contacts nothing; `addAutobaseBackground(base)` / `addCoreBackground(core, { referrer })`; `suspend()/resume()/close()` |
+| blind-peer (devDep, smoke only) | 3.12.2 | server is `new BlindPeer(rocksPath, { bootstrap })` (ReadyResource) + `listen()`; `publicKey` = its swarm key (what clients list in `keys`); `digest` = `{ referrers, cores, bytesAllocated }` |
+| protomux-wakeup | 2.9.0 | `new Wakeup(onwakeup = noop)` — handler optional in this version; every swarm connection must be fed via `wakeup.addStream(conn)` |
+
+Wiring: `Vault` takes `blindPeerKeys`; the client is created with the swarm in
+`share()` (`suspended: this.suspended` so a swarm minted mid-background gets a
+suspended mirror client too), registers the autobase + every blob core
+(background variants — mirror registration never blocks boot or an import),
+re-registers each new per-epoch blob core on rotation, and follows the Ch8
+lifecycle queue (suspend first — mirror RPC state rides the DHT, which
+swarm.suspend takes down; resume last, after the DHT is back). Worker takes the
+mirror key as `Bare.argv[1]` (z32).
+
+Smoke (all hermetic, testnet): mirror absorbs (digest moves) → **founder
+closes** → a fresh member converges from the mirror alone and pages the
+ORIGINAL in from it (M1's honest boundary, closed) → the mirror's storage
+greps clean of the plaintext thumbnail marker, with a positive control proving
+the grep detects plaintext in an unencrypted store → mirror client follows
+vault suspend/resume.
+
+Not wired: `blind-push` (push-style wakeups are mobile push infrastructure —
+infra follow-on, not code this repo can prove); deeper protomux-wakeup
+semantics (backgrounded phone learns what the mirror absorbed) are
+device-verified territory.

@@ -20,6 +20,7 @@ const Hyperswarm = require('hyperswarm')
 const BlindPairing = require('blind-pairing')
 const z32 = require('z32')
 const createTestnet = require('hyperdht/testnet')
+const BlindPeer = require('blind-peer')
 const idEncoding = require('hypercore-id-encoding')
 const crypto = require('hypercore-crypto')
 const { resolveStruct } = require('../spec')
@@ -698,6 +699,89 @@ await evMember.close()
 await evNet.destroy()
 fs.rmSync(evFDir, { recursive: true, force: true }); fs.rmSync(evMDir, { recursive: true, force: true })
 
+// Ch9 M2: THE BLIND PEER — an always-on mirror that keeps the library
+// available while every phone sleeps, holding ONLY ciphertext it cannot read.
+// The founder registers its autobase + blob cores with the mirror, goes
+// offline, and a member converges — index AND original bytes — from the
+// mirror alone. This closes M1's honest boundary ("an evicted original is
+// unreachable until SOME peer holds it") and Part 8's simultaneous-resume
+// dead zone (somebody is always home).
+
+// Recursive plaintext grep over a storage dir.
+const dirContains = (dir, marker) => {
+  const needle = Buffer.from(marker)
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) { if (walk(p)) return true }
+      else if (e.isFile() && fs.readFileSync(p).includes(needle)) return true
+    }
+    return false
+  }
+  return walk(dir)
+}
+
+// Control: an UNENCRYPTED vault's storage DOES contain its thumbnail marker in
+// plaintext — proving the negative grep below can actually detect leakage.
+const ctlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-ctl-'))
+const ctlVault = new Vault(ctlDir)
+await ctlVault.ready()
+await ctlVault.importPhoto(PNG_1PX, { name: 'plain.png', takenAt: 500, thumb: 'THUMB-MARKER-PLAIN' })
+await ctlVault.close()
+assert.ok(dirContains(ctlDir, 'THUMB-MARKER-PLAIN'), 'control: plaintext IS greppable in an unencrypted store')
+fs.rmSync(ctlDir, { recursive: true, force: true })
+
+const bpNet = await createTestnet(3)
+const bpSrvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-bpS-'))
+const bpServer = new BlindPeer(path.join(bpSrvDir, 'rocks'), { bootstrap: bpNet.bootstrap })
+await bpServer.ready()
+await bpServer.listen()
+
+const bpAlbum = crypto.randomBytes(32)
+const bpFDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-bpF-'))
+const bpFounder = new Vault(bpFDir, { encryptionKey: bpAlbum, dhtBootstrap: bpNet.bootstrap, blindPeerKeys: [bpServer.publicKey] })
+await bpFounder.ready()
+const BIG2 = Buffer.from(crypto.randomBytes(48000))
+await bpFounder.importPhoto(BIG2, { name: 'cold.png', takenAt: 1000, thumb: 'THUMB-COLD-MARKER' })
+const bpLibKey = idEncoding.encode(bpFounder.base.key)
+await bpFounder.share()
+
+// The mirror absorbs — its digest counts cores/bytes it now hosts.
+let bpAbsorbed = false
+for (let i = 0; i < 1600 && !bpAbsorbed; i++) {
+  await new Promise((res) => setTimeout(res, 25))
+  bpAbsorbed = !!(bpServer.digest && (bpServer.digest.bytesAllocated > 0 || bpServer.digest.cores > 0))
+}
+assert.ok(bpAbsorbed, 'the blind peer absorbed the library (digest moved)')
+
+// The phone goes dark. The library must not.
+await bpFounder.close()
+const bpMDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-bpM-'))
+const bpMember = new Vault(bpMDir, { bootstrap: bpLibKey, encryptionKey: bpAlbum, dhtBootstrap: bpNet.bootstrap, blindPeerKeys: [bpServer.publicKey] })
+await bpMember.ready()
+await bpMember.share()
+let bpRec = null
+for (let i = 0; i < 1600 && !bpRec; i++) { await new Promise((res) => setTimeout(res, 25)); bpRec = (await bpMember.list({ limit: 10, residency: true })).find((p) => p.name === 'cold.png') }
+assert.ok(bpRec, 'a member converges from the mirror ALONE — the founder is offline')
+assert.equal(bpRec.thumb, 'THUMB-COLD-MARKER', 'and decrypts it (the member holds the album key; the mirror never did)')
+const bpRes = await fetch(bpRec.link)
+assert.equal(bpRes.status, 200, 'the ORIGINAL pages in from the mirror — the cold tier serves bytes, not just index')
+assert.ok(Buffer.from(await bpRes.arrayBuffer()).equals(BIG2), 'paged-in bytes intact (M1\'s honest boundary, closed)')
+
+// The mirror held it all and could read none of it.
+assert.ok(!dirContains(bpSrvDir, 'THUMB-COLD-MARKER'), 'the mirror\'s storage contains NO plaintext — blind means blind')
+
+// Mirrors follow the Ch8 lifecycle like everything else with sockets.
+await bpMember.suspend()
+assert.ok(bpMember.blind.suspended, 'the mirror client suspends with the vault')
+await bpMember.resume()
+assert.ok(!bpMember.blind.suspended, 'and resumes with it')
+
+await bpMember.close()
+await bpServer.close()
+await bpNet.destroy()
+fs.rmSync(bpSrvDir, { recursive: true, force: true }); fs.rmSync(bpFDir, { recursive: true, force: true }); fs.rmSync(bpMDir, { recursive: true, force: true })
+
 // The oracle: near-duplicates first (grid-identical threshold), then oldest.
 const orDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-oracle-'))
 const orVault = new Vault(orDir)
@@ -715,4 +799,4 @@ assert.deepEqual(await orVault.evictionCandidates({}), [], 'no byte target → n
 await orVault.close()
 fs.rmSync(orDir, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle) all verified')
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle) all verified')

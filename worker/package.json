@@ -17,6 +17,7 @@
     "bare-path": "^3.0.0",
     "bare-rpc": "^1.3.8",
     "blind-pairing": "^2.3.1",
+    "blind-peering": "^2.4.1",
     "compact-encoding": "^3.3.0",
     "corestore": "^7.11.0",
     "hyperbee": "^2.27.3",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "bare-link": "^3.3.0",
     "bare-pack": "^2.2.0",
+    "blind-peer": "^3.12.2",
     "hyperdht": "^6.33.0"
   }
 }
