@@ -810,9 +810,13 @@ the following. Fixes land in severity batches, each counterfactual-verified
 
 ### Documented as remaining (native / deployment work, not in-repo code)
 
-- **AF-H5 (full):** platform keychain (iOS Keychain / Android Keystore) for the
-  seed + a 24-word mnemonic backup. Partial done (atomic writes, 0o600). This
-  is the standing ship-blocker for the "data collected: none" claim.
+- **AF-H5 (keychain half only):** platform keychain (iOS Keychain / Android
+  Keystore) for the seed. Needs a new Nitro module (spec + nitrogen codegen +
+  Kotlin/Swift) and a device build that cannot be compiled or exercised here —
+  shipping untested native key-storage would move the root secret onto an
+  unverified path, which is worse than the documented gap. Still the standing
+  ship-blocker for the "data collected: none" claim.
+  (The BACKUP half is now DONE — see the mnemonic section below.)
 - **AF-M10:** thumbnails live in both the append-only log block and the view,
   are never evictable, and every new device replays full history — ~1-2 GB at
   50k photos. The real fix (thumbnails as blob pointers + snapshot/prune) is a
@@ -833,3 +837,33 @@ the following. Fixes land in severity batches, each counterfactual-verified
   connect on the members' topic to harvest IPs (its content is already redacted).
   A Hyperswarm firewall keyed on the current roster would drop revoked writers at
   the transport edge — defense-in-depth, left as a known LOW.
+
+
+### AF-H5 (backup half) — the 24 words, DONE
+
+`CONSTRAINT-KEY-BACKUP` was fully unmet: the 32-byte seed lived in exactly one
+file on one phone, so device loss meant the library was gone with no recovery
+path of any kind. `worker/mnemonic.js` now encodes it as a standard BIP39
+24-word mnemonic and decodes it back; `EXPORT_MNEMONIC` / `RESTORE_MNEMONIC`
+RPCs and a Back-up / Restore UI expose it.
+
+- **Bare-safe by construction.** Implemented on `sodium-universal`'s SHA-256 +
+  the vendored official English wordlist rather than the `bip39` package, which
+  must not be relied on inside the worklet. `bip39` is a devDependency used only
+  to generate the wordlist and to CROSS-CHECK every vector in the smoke — so the
+  codec is standards-conformant, not merely self-consistent.
+- **Typos fail loudly.** Wrong length, non-wordlist words, and word-order swaps
+  all throw (the checksum catches the swap). This matters more than it looks: a
+  silently-accepted wrong mnemonic would yield a different but well-formed
+  identity — an empty library that looks "restored".
+- **The recovery property.** Smoke proves the words rebuild the same device
+  writer key AND the same LIBRARY key, i.e. a restored phone is the original
+  founder and re-syncs its content from any peer or blind mirror still holding
+  it (which is exactly what Ch9's mirror is for).
+- **Restore is guarded**: refused if the device already holds photos or has
+  joined a library (overwriting the seed would orphan the local store's cores),
+  so it only runs on a fresh install; the vault is rebooted in a `finally` so
+  the worker is never left vault-less.
+- The bundle-freshness gate was extended to hash `.json` too — the wordlist is a
+  bundled runtime asset, and hashing only `.js` would have missed it (verified:
+  editing the wordlist now reports STALE).

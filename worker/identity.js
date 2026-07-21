@@ -93,6 +93,14 @@ function loadMembership (fs, membershipPath) {
   return { libraryKey: buf.subarray(0, 32), albumKey: buf.subarray(32, 64) }
 }
 
+// Overwrite the device seed (AF-H5 restore-from-mnemonic). Atomic + owner-only
+// like every other artifact. Callers must have established there's nothing to
+// lose — the local store's cores derive from the OLD seed.
+function saveSeed (fs, seedPath, seed) {
+  if (!seed || seed.byteLength !== 32) throw new Error('saveSeed: expected a 32-byte seed')
+  writeFileAtomic(fs, seedPath, seed)
+}
+
 // Blind-mirror keys (AF-M2), one z32 per line, atomic + owner-only like the
 // rest. A corrupt/garbled mirror file is NON-fatal — mirrors are re-addable, so
 // unreadable lines are simply skipped (the caller validates each z32).
@@ -106,4 +114,4 @@ function saveMirrors (fs, mirrorPath, z32keys) {
   writeFileAtomic(fs, mirrorPath, b4a.from(z32keys.join('\n'), 'utf-8'))
 }
 
-module.exports = { primaryKeyFromSeed, encryptionKeyFromSeed, loadOrCreateSeed, saveMembership, loadMembership, loadMirrors, saveMirrors }
+module.exports = { primaryKeyFromSeed, encryptionKeyFromSeed, loadOrCreateSeed, saveSeed, saveMembership, loadMembership, loadMirrors, saveMirrors }

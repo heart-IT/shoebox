@@ -32,6 +32,7 @@
   "devDependencies": {
     "bare-link": "^3.3.0",
     "bare-pack": "^2.2.0",
+    "bip39": "^3.1.0",
     "blind-peer": "^3.12.2",
     "hyperdht": "^6.33.0"
   }

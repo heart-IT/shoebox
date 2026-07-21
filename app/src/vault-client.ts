@@ -14,7 +14,7 @@ export interface ImportResult {
 // bare-rpc encodes the command as a uint — integers, not strings. Mirrors the
 // worker's CMD map exactly (worker/index.js). ERROR is a worker→app EVENT (the
 // worker emits it if boot fails), not a request.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10, JOIN: 11, EVICT: 12, STORAGE_STAT: 13, SET_MIRROR: 14 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, ERROR: 9, REMOVE_MEMBER: 10, JOIN: 11, EVICT: 12, STORAGE_STAT: 13, SET_MIRROR: 14, EXPORT_MNEMONIC: 15, RESTORE_MNEMONIC: 16 }
 // A worklet that never replies (e.g. a boot hang) must not leave a promise
 // pending forever — every request is raced against this deadline.
 const RPC_TIMEOUT_MS = 20000
@@ -100,6 +100,19 @@ export class VaultClient {
   // worker and re-registered on every boot; returns the current mirror set.
   setMirror(key: string): Promise<{ mirrors: string[] }> {
     return this.call(CMD.SET_MIRROR, { key })
+  }
+
+  // AF-H5: the 24 words that restore this device's identity. THIS IS THE ROOT
+  // SECRET — show it once, for the user to write down, never log or transmit it.
+  exportMnemonic(): Promise<{ mnemonic: string }> {
+    return this.call(CMD.EXPORT_MNEMONIC)
+  }
+
+  // AF-H5: rebuild this device's identity from its 24 words. Only valid on a
+  // fresh install (the worker refuses if this device already holds photos or
+  // has joined a library) — same seed → same library key → re-syncs from peers.
+  restoreMnemonic(mnemonic: string): Promise<{ ok: boolean; libraryKey: string }> {
+    return this.call(CMD.RESTORE_MNEMONIC, { mnemonic })
   }
 
   importPhoto(name: string, dataBase64: string, takenAt = Date.now()): Promise<ImportResult> {

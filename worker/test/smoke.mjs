@@ -158,6 +158,49 @@ const idSeed = b4a.from('22'.repeat(32), 'hex')
 assert.ok(b4a.equals(primaryKeyFromSeed(idSeed), primaryKeyFromSeed(idSeed)), 'primaryKeyFromSeed is deterministic')
 assert.equal(primaryKeyFromSeed(idSeed).byteLength, 32, 'primary key is 32 bytes')
 
+// Audit AF-H5: THE 24 WORDS. A device's whole identity is one 32-byte seed, and
+// until now it existed in exactly one place — so a lost phone was a lost library
+// with no recovery path (CONSTRAINT-KEY-BACKUP). Our BIP39 codec is implemented
+// on sodium's SHA-256 (Bare-safe) rather than the `bip39` package, so it is
+// CROSS-CHECKED against the real bip39 here: standards-conformant, not merely
+// self-consistent.
+const { mnemonicFromSeed, seedFromMnemonic } = require('../mnemonic')
+const bip39 = require('bip39')
+for (const hex of ['00'.repeat(32), 'ff'.repeat(32), '22'.repeat(32), b4a.toString(crypto.randomBytes(32), 'hex')]) {
+  const s = b4a.from(hex, 'hex')
+  const mine = mnemonicFromSeed(s)
+  assert.equal(mine, bip39.entropyToMnemonic(hex), `AF-H5: our mnemonic matches reference bip39 for ${hex.slice(0, 8)}…`)
+  assert.equal(mine.split(' ').length, 24, 'a 32-byte seed encodes to 24 words')
+  assert.ok(b4a.equals(seedFromMnemonic(mine), s), 'and decodes back to the exact seed')
+  assert.ok(bip39.validateMnemonic(mine), 'reference bip39 validates it')
+}
+// Typos must FAIL, never silently yield a different-but-valid identity (which
+// would look "restored" and be a new, empty library).
+const goodWords = mnemonicFromSeed(b4a.from('33'.repeat(32), 'hex'))
+assert.throws(() => seedFromMnemonic(goodWords.split(' ').slice(0, 23).join(' ')), /24 words/, 'a 23-word mnemonic is rejected')
+assert.throws(() => seedFromMnemonic(goodWords.replace(/^\S+/, 'notaword')), /not a BIP39 word/, 'a non-wordlist word is rejected')
+const swapped = goodWords.split(' '); [swapped[0], swapped[1]] = [swapped[1], swapped[0]]
+assert.throws(() => seedFromMnemonic(swapped.join(' ')), /checksum/, 'a word-order swap fails the checksum — no silent wrong identity')
+assert.ok(b4a.equals(seedFromMnemonic(goodWords.toUpperCase() + '  '), b4a.from('33'.repeat(32), 'hex')), 'case and stray whitespace are tolerated')
+// THE RECOVERY PROPERTY: the words rebuild the same device identity AND the
+// same library key — which is what makes a restored phone the original founder,
+// able to re-sync its content from any peer or mirror still holding it.
+const recSeed = crypto.randomBytes(32)
+const recWords = mnemonicFromSeed(recSeed)
+const recDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-recA-'))
+const recA = new Vault(recDirA, { primaryKey: primaryKeyFromSeed(recSeed) })
+await recA.ready()
+const recDeviceKey = b4a.toString(recA.deviceKey, 'hex')
+const recLibraryKey = b4a.toString(recA.libraryKey, 'hex')
+await recA.close(); fs.rmSync(recDirA, { recursive: true, force: true })
+// ...the phone is lost. A FRESH device restores from the words alone:
+const recDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-recB-'))
+const recB = new Vault(recDirB, { primaryKey: primaryKeyFromSeed(seedFromMnemonic(recWords)) })
+await recB.ready()
+assert.equal(b4a.toString(recB.deviceKey, 'hex'), recDeviceKey, 'AF-H5: the words restore the SAME device writer key')
+assert.equal(b4a.toString(recB.libraryKey, 'hex'), recLibraryKey, 'AF-H5: and the SAME library key — the restored device IS the original founder')
+await recB.close(); fs.rmSync(recDirB, { recursive: true, force: true })
+
 // Audit AF-M12: persisted key artifacts fail LOUD on corruption instead of
 // silently re-minting an identity / re-founding over a joined store.
 const { loadOrCreateSeed } = require('../identity')
@@ -1108,4 +1151,4 @@ assert.equal(orEv.freedBytes, PNG_1PX.byteLength, 'and reports the freed bytes o
 await orVault.close()
 fs.rmSync(orDir, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle), key continuity (owner-reboot+late-joiner-grants+kicked-gains-nothing), private topic (derived≠public+stranger-finds-nobody+keyholder-connects), loud metrics (peers+lastUpdateAt+suspended honest across lifecycle) all verified')
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle), key continuity (owner-reboot+late-joiner-grants+kicked-gains-nothing), private topic (derived≠public+stranger-finds-nobody+keyholder-connects), loud metrics (peers+lastUpdateAt+suspended honest across lifecycle), mnemonic backup (bip39-cross-checked+typo-rejection+identity/library-key recovery) all verified')

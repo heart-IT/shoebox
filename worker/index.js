@@ -35,7 +35,7 @@ async function withThumb (bytes, meta) {
 
 // bare-rpc encodes the command as a uint on the wire — commands are integers,
 // not strings. This map is the wire contract; the app mirrors it exactly.
-const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11, EVICT: 12, STORAGE_STAT: 13, SET_MIRROR: 14 }
+const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11, EVICT: 12, STORAGE_STAT: 13, SET_MIRROR: 14, EXPORT_MNEMONIC: 15, RESTORE_MNEMONIC: 16 }
 
 let vault = null
 // Audit AF-M9: RPC input bounds. The app is the only client, but it's still the
@@ -175,6 +175,36 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
       case CMD.LIST_MEMBERS:
         req.reply(json({ members: await vault.members() }))
         break
+      case CMD.EXPORT_MNEMONIC:
+        // AF-H5: the 24 words that restore this device's identity. This IS the
+        // root secret — the app shows it once, for the user to write down.
+        req.reply(json({ mnemonic: ctx.mnemonicFromSeed(ctx.seed) }))
+        break
+      case CMD.RESTORE_MNEMONIC: {
+        // Restore a lost device: write the seed the words encode, then reboot.
+        // Same seed → same primaryKey → same writer core → the SAME library key,
+        // so this device becomes the original founder again and re-syncs from
+        // any peer or mirror still holding the content.
+        //
+        // GUARDED: only on a device with nothing to lose. Overwriting the seed
+        // orphans whatever the local store already holds (its cores are derived
+        // from the OLD seed), so refuse if this device has photos or has joined
+        // someone else's library. Restore belongs on a fresh install.
+        const { mnemonic } = JSON.parse(b4a.toString(req.data))
+        const restored = ctx.seedFromMnemonic(mnemonic) // throws on bad words/checksum
+        if (ctx.loadMembership(ctx.fs, ctx.membershipPath)) throw new Error('this device has joined a library — restore only on a fresh install')
+        if ((await vault.count()) > 0) throw new Error('this device already holds photos — restore only on a fresh install')
+        await vault.close()
+        vault = null
+        try {
+          ctx.saveSeed(ctx.fs, ctx.seedPath, restored)
+          ctx.reseed(restored) // recompute primaryKey / album key / box keypair
+        } finally {
+          await bootVault() // never leave the worker vault-less (AF-H2)
+        }
+        req.reply(json({ ok: true, libraryKey: idEncoding.encode(vault.libraryKey) }))
+        break
+      }
       case CMD.SET_MIRROR: {
         // AF-M2: configure an always-on blind mirror at runtime (the app's
         // Settings). Validate the z32 key, register it live, and persist it so
@@ -241,8 +271,9 @@ async function main () {
   const os = require('bare-os')
   const path = require('bare-path')
   const fs = require('bare-fs')
-  const { loadOrCreateSeed, primaryKeyFromSeed, encryptionKeyFromSeed, saveMembership, loadMembership, loadMirrors, saveMirrors } = require('./identity')
+  const { loadOrCreateSeed, primaryKeyFromSeed, encryptionKeyFromSeed, saveSeed, saveMembership, loadMembership, loadMirrors, saveMirrors } = require('./identity')
   const { memberBoxKeyFromSeed } = require('./rotation')
+  const { mnemonicFromSeed, seedFromMnemonic } = require('./mnemonic')
 
   const base = Bare.argv[0] || os.tmpdir()
   // Optional second arg: the z32 key of a self-run blind peer (Ch9 M2) — the
@@ -260,9 +291,11 @@ async function main () {
   try { const r = loadMirrors(fs, path.join(base, 'shoebox-relay'))[0]; if (r) relayThrough = idEncoding.decode(r) } catch { /* invalid relay key — skip */ }
   // The device identity seed — minted once, persisted, the root every core
   // descends from. It seeds both the device's keys (primaryKey) and the album's
-  // encryption key. (A later chapter backs it up as a mnemonic and moves it into
-  // the platform keychain; here it lives beside the vault.)
-  const seed = loadOrCreateSeed(fs, path.join(base, 'shoebox-seed'))
+  // encryption key. AF-H5: it is now exportable as a 24-word mnemonic (and
+  // restorable from one); moving it into the platform keychain remains native
+  // work, so here it still lives beside the vault.
+  const seedPath = path.join(base, 'shoebox-seed')
+  const seed = loadOrCreateSeed(fs, seedPath)
   // Everything a boot (or a later JOIN reboot) needs, computed once. The founder's
   // album key comes from the seed; a joiner's comes from disk (membership).
   ctx = {
@@ -271,15 +304,26 @@ async function main () {
     loadMembership,
     loadMirrors,
     saveMirrors,
+    saveSeed,
+    mnemonicFromSeed,
+    seedFromMnemonic,
     mirrorPath,
+    seedPath,
+    seed,
     vaultPath: path.join(base, 'shoebox-vault'),
     membershipPath: path.join(base, 'shoebox-membership'),
-    primaryKey: primaryKeyFromSeed(seed),
-    founderAlbumKey: encryptionKeyFromSeed(seed),
-    boxKeyPair: memberBoxKeyFromSeed(seed), // opens content keys sealed to us on rotation (Ch7 M3)
     blindPeerKeys: bootMirrorZ.length ? bootMirrorZ.map((z) => idEncoding.decode(z)) : null,
     relayThrough,
+    // Recompute every seed-derived key. Called once at boot, and again after a
+    // mnemonic restore replaces the seed (AF-H5).
+    reseed (s) {
+      ctx.seed = s
+      ctx.primaryKey = primaryKeyFromSeed(s)
+      ctx.founderAlbumKey = encryptionKeyFromSeed(s)
+      ctx.boxKeyPair = memberBoxKeyFromSeed(s) // opens content keys sealed to us on rotation (Ch7 M3)
+    },
   }
+  ctx.reseed(seed)
   await bootVault()
 }
 

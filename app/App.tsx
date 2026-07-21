@@ -50,6 +50,10 @@ export default function App() {
   // must not leave the sync line frozen at a stale-but-reassuring value.
   const [syncFresh, setSyncFresh] = useState(true)
   const [mirrorKey, setMirrorKey] = useState('')
+  // AF-H5: the 24-word backup. Held in state only while the user is looking at
+  // it — it's the root secret, so it is never logged or persisted app-side.
+  const [mnemonic, setMnemonic] = useState<string | null>(null)
+  const [restoreWords, setRestoreWords] = useState('')
   const clientRef = useRef<VaultClient | null>(null)
   // Reentrancy guard: import buttons don't disable themselves, so a double-tap
   // (or tapping a second import mid-run) would interleave two batches into the
@@ -271,6 +275,46 @@ export default function App() {
     )
   }
 
+  // AF-H5: reveal the 24-word backup. Until this existed, losing the phone lost
+  // the library outright — there was no recovery path of any kind.
+  const showBackup = async () => {
+    try {
+      const res = await clientRef.current!.exportMnemonic()
+      setMnemonic(res.mnemonic)
+      setStatus('write these 24 words down — they restore this library')
+    } catch (e) {
+      setStatus(`backup failed: ${String(e)}`)
+    }
+  }
+
+  // AF-H5: rebuild this device from its words. Confirm first — it replaces the
+  // device identity (the worker refuses if there's anything here to lose).
+  const restoreFromWords = () => {
+    const words = restoreWords.trim()
+    if (!words) return setStatus('paste your 24 words first')
+    Alert.alert(
+      'Restore this device?',
+      'This replaces the identity on this device with the one your words encode, then re-syncs from any peer or mirror that still holds the photos. Only do this on a fresh install.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Restore',
+          style: 'destructive',
+          onPress: async () => {
+            setStatus('restoring…')
+            try {
+              const res = await clientRef.current!.restoreMnemonic(words)
+              setRestoreWords('')
+              setStatus(`restored — library ${res.libraryKey.slice(0, 12)}…; syncing from peers`)
+            } catch (e) {
+              setStatus(`restore failed: ${String(e)}`)
+            }
+          },
+        },
+      ],
+    )
+  }
+
   // AF-M2: point the library at an always-on blind mirror (a z32 key from your
   // own `blind-peer` box). Persisted in the worker; re-registered every boot.
   const configureMirror = async () => {
@@ -471,6 +515,32 @@ export default function App() {
             autoCorrect={false}
           />
           <Button title="Set mirror" onPress={configureMirror} />
+        </View>
+
+        {/* AF-H5: the only recovery path that exists. Back it up, or a lost
+            phone is a lost library. */}
+        <Button title="Back up (24 words)" onPress={showBackup} />
+        {mnemonic && (
+          <View style={styles.keyBox}>
+            <Text style={styles.keyLabel}>write these down, in order — anyone with them owns this library {'↓'}</Text>
+            <Text style={styles.key} selectable>
+              {mnemonic}
+            </Text>
+            <Button title="Hide" onPress={() => setMnemonic(null)} />
+          </View>
+        )}
+        <View style={styles.joinBox}>
+          <TextInput
+            style={styles.input}
+            value={restoreWords}
+            onChangeText={setRestoreWords}
+            placeholder="restore: paste your 24 words"
+            placeholderTextColor="#777"
+            autoCapitalize="none"
+            autoCorrect={false}
+            multiline
+          />
+          <Button title="Restore this device" onPress={restoreFromWords} />
         </View>
         <Button title="Open the roll" onPress={openRoll} />
         <Button title={`Import ${BATCH} (naive base64)`} onPress={importRollNaive} />

@@ -17,14 +17,16 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const workerDir = path.resolve(here, '../worker')
 const hashFile = path.join(here, 'worker.bundle.hash')
 
-// Every runtime source file the bundle is built from — all .js under worker/,
-// excluding node_modules, the test suite, and codegen tooling.
+// Every runtime source file the bundle is built from — .js AND .json under
+// worker/ (the BIP39 wordlist is a bundled .json, so hashing only .js would
+// miss it), excluding node_modules, the test suite, and package manifests.
+const SKIP_FILES = new Set(['package.json', 'package-lock.json'])
 function sourceFiles (dir, acc = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === 'node_modules' || e.name === 'test') continue
+    if (e.name === 'node_modules' || e.name === 'test' || SKIP_FILES.has(e.name)) continue
     const p = path.join(dir, e.name)
     if (e.isDirectory()) sourceFiles(p, acc)
-    else if (e.name.endsWith('.js')) acc.push(p)
+    else if (e.name.endsWith('.js') || e.name.endsWith('.json')) acc.push(p)
   }
   return acc
 }
