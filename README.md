@@ -34,11 +34,14 @@ cd ../desktop && npm install
 node peek.mjs <library-key>
 ```
 
-> **Encryption note (Chapter 7):** the phone's album is now encrypted, so a bare
-> `peek.mjs <library-key>` replicates ciphertext and reads EMPTY — that is the
-> point: the album is private to key-holders. To actually read it, pass the album
-> key: `node peek.mjs <library-key> <album-key-hex>`. (Surfacing that key from the
-> app — an export/QR flow — is a later milestone; see the encryption chapter.)
+> **Encryption note (Chapters 7 + 10):** the phone's album is encrypted, and since
+> Chapter 10 its members swarm on a topic **derived from the album key** — so a bare
+> `peek.mjs <library-key>` no longer even finds the members (before Ch10 it
+> replicated ciphertext and read EMPTY; now it connects to nobody). The library key
+> is a shareable identifier that leaks neither content nor member addresses. To
+> actually read the album, pass the album key: `node peek.mjs <library-key>
+> <album-key-hex>` — it derives the members' topic AND decrypts. (Surfacing that key
+> from the app — an export/QR flow — is a later milestone; see the encryption chapter.)
 
 Nitro codegen (`npx nitrogen`) only needs re-running when `src/specs/*.nitro.ts`
 changes; the generated output in `nitrogen/generated/` is committed.

@@ -605,3 +605,25 @@ devices that deserved them):
   construction — re-inviting IS re-sharing, not a redaction tool. The kicked
   state is where Inv-9 lives, and the smoke re-asserts the kicked member gains
   nothing from either fix.
+
+## Ch10 M2 — a private discovery topic (2026-07-21)
+
+`discoveryKey(libraryKey)` is a PUBLIC derivation. An encrypted album swarming
+on it protected the content but not the people: any library-key holder could
+join the topic and harvest members' IP addresses. Members now meet on
+`hash('shoebox:album-topic:v1' || albumKey)` — finding the members requires
+the same secret as reading them; the library key stays a shareable identifier
+that leaks neither. Implemented once in `worker/library.js` (`discoveryTopic`)
+and shared by the vault, `peek.mjs`, `join.mjs`, and the smoke — one derivation,
+no drift. Unencrypted libraries keep the classic topic; blind mirrors are
+unaffected (dialed directly by key, no topic involved).
+
+Smoke: derived ≠ public + deterministic; a library-key-only stranger camping
+on the legacy topic gets ZERO connections (bounded negative); an album-key
+holder connects on the derived topic. The Ch7 pairing section and README peek
+note updated: a bare `peek.mjs <library-key>` now finds nobody instead of
+replicating ciphertext — strictly less signal to strangers.
+
+Boundary: the pairing INVITE still announces on its own blind-pairing topic
+(that's its job — a candidate must find the owner before it holds any key),
+and DHT-level traffic analysis is out of scope for a topic derivation.

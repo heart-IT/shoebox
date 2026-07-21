@@ -17,7 +17,7 @@ const Wakeup = require('protomux-wakeup')
 const idEncoding = require('hypercore-id-encoding')
 const z32 = require('z32') // invites are variable-length, not 32-byte keys
 const b4a = require('b4a')
-const { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleOf, currentEpoch, sealedKeysFor, memberBoxKeys, readEpoch, writeUint64BE } = require('./library')
+const { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleOf, currentEpoch, sealedKeysFor, memberBoxKeys, readEpoch, discoveryTopic, writeUint64BE } = require('./library')
 const { newContentKey, sealTo, openSealed, contentEncrypt, contentDecrypt } = require('./rotation')
 
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', heic: 'image/heic', webp: 'image/webp', gif: 'image/gif' }
@@ -280,7 +280,9 @@ class Vault {
       if (this.wakeup) this.wakeup.addStream(conn) // mirror hints ride every connection
       this.base.replicate(conn)
     })
-    this.swarm.join(this.base.discoveryKey, { server: true, client: true })
+    // Ch10 M2: an encrypted album meets on a topic derived from the ALBUM key,
+    // so holding the shareable library key alone no longer finds the members.
+    this.swarm.join(discoveryTopic(this.base, this.encryptionKey), { server: true, client: true })
     // Ch9 M2: register with the blind mirrors. The client rides the swarm's
     // DHT and connects to each mirror DIRECTLY by key (no topic involved); the
     // mirror replicates the log, the views, and the blob cores as ciphertext —

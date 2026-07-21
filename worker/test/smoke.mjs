@@ -24,7 +24,7 @@ const BlindPeer = require('blind-peer')
 const idEncoding = require('hypercore-id-encoding')
 const crypto = require('hypercore-crypto')
 const { resolveStruct } = require('../spec')
-const { CMD, commandEncoding, openView, apply, roleOf } = require('../library')
+const { CMD, commandEncoding, openView, apply, roleOf, discoveryTopic } = require('../library')
 const { primaryKeyFromSeed, saveMembership, loadMembership } = require('../identity')
 const { memberBoxKeyFromSeed } = require('../rotation')
 
@@ -311,7 +311,7 @@ const jBase = new Autobase(joinStore, delivered.key, { open: openView, apply, va
 await jBase.ready()
 candSwarm.on('connection', (conn) => jBase.replicate(conn))
 for (const conn of candSwarm.connections) jBase.replicate(conn)
-candSwarm.join(jBase.discoveryKey, { server: true, client: true })
+candSwarm.join(discoveryTopic(jBase, delivered.encryptionKey), { server: true, client: true }) // members-only topic (Ch10 M2)
 let jSeen = null
 for (let i = 0; i < 400 && !(jSeen && jBase.writable); i++) { await new Promise((res) => setTimeout(res, 25)); await jBase.update(); jSeen = await jBase.view.photos.peek({ reverse: true }) }
 assert.ok(jSeen && jSeen.value.name === 'secret.png', 'the joiner reads the encrypted album with the delivered key')
@@ -844,6 +844,48 @@ assert.ok(!g10A.contentKeys.has(1), 'no grant ever addressed the kicked member')
 await g10J.close(); await g10A.close(); await g10Founder.close(); await g10net.destroy()
 fs.rmSync(g10fDir, { recursive: true, force: true }); fs.rmSync(g10aDir, { recursive: true, force: true }); fs.rmSync(g10jDir, { recursive: true, force: true })
 
+// Ch10 M2: A PRIVATE DISCOVERY TOPIC. `discoveryKey(libraryKey)` is a public
+// derivation — so an encrypted album that swarms on it hands every library-key
+// holder the members' IP addresses, even though the CONTENT is safe. Members
+// now meet on a topic derived from the ALBUM key: finding the members requires
+// the same secret as reading them. The library key stays what it always was —
+// a shareable identifier — and leaks nothing about where the members are.
+const dtAlbum = crypto.randomBytes(32)
+const dtBase = { discoveryKey: crypto.randomBytes(32) } // shape-only stand-in for the pure-function checks
+assert.ok(!b4a.equals(discoveryTopic(dtBase, dtAlbum), dtBase.discoveryKey), 'an encrypted album\'s topic is NOT the public discoveryKey')
+assert.ok(b4a.equals(discoveryTopic(dtBase, dtAlbum), discoveryTopic(dtBase, dtAlbum)), 'the derived topic is deterministic (members independently compute the same one)')
+assert.ok(b4a.equals(discoveryTopic(dtBase, null), dtBase.discoveryKey), 'an unencrypted library keeps the classic topic')
+
+const dtNet = await createTestnet(3)
+const dtFDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-dtF-'))
+const dtFounder = new Vault(dtFDir, { encryptionKey: dtAlbum, dhtBootstrap: dtNet.bootstrap })
+await dtFounder.ready()
+await dtFounder.importPhoto(PNG_1PX, { name: 'hidden.png', takenAt: 1000 })
+await dtFounder.share()
+
+// A stranger holding ONLY the library key camps on the legacy topic: nobody
+// announces there anymore, so it gets no connection — no members' addresses,
+// no ciphertext stream, nothing (bounded negative, ~3s).
+const dtStranger = new Hyperswarm({ bootstrap: dtNet.bootstrap })
+dtStranger.on('connection', (conn) => conn.on('error', () => {}))
+dtStranger.join(dtFounder.base.discoveryKey, { client: true, server: false })
+await dtStranger.flush().catch(() => {})
+for (let i = 0; i < 120; i++) { await new Promise((res) => setTimeout(res, 25)) }
+assert.equal(dtStranger.connections.size, 0, 'a library-key-only stranger finds NOBODY on the legacy topic')
+await dtStranger.destroy()
+
+// A key-holder derives the members' topic and connects.
+const dtPeer = new Hyperswarm({ bootstrap: dtNet.bootstrap })
+dtPeer.on('connection', (conn) => conn.on('error', () => {}))
+dtPeer.join(discoveryTopic(dtFounder.base, dtAlbum), { client: true, server: false })
+let dtConnected = false
+for (let i = 0; i < 400 && !dtConnected; i++) { await new Promise((res) => setTimeout(res, 25)); dtConnected = dtPeer.connections.size > 0 }
+assert.ok(dtConnected, 'an album-key holder finds the members on the derived topic')
+await dtPeer.destroy()
+await dtFounder.close()
+await dtNet.destroy()
+fs.rmSync(dtFDir, { recursive: true, force: true })
+
 // The oracle: near-duplicates first (grid-identical threshold), then oldest.
 const orDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-oracle-'))
 const orVault = new Vault(orDir)
@@ -861,4 +903,4 @@ assert.deepEqual(await orVault.evictionCandidates({}), [], 'no byte target → n
 await orVault.close()
 fs.rmSync(orDir, { recursive: true, force: true })
 
-console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle), key continuity (owner-reboot+late-joiner-grants+kicked-gains-nothing) all verified')
+console.log('smoke: ok — indexed, range query, 64-bit key, no collision, Inv-4, 0-byte, count-race, read-replica, seed-identity, pairing→writable, two-writer convergence, roles, revocation, re-invite-after-revoke, author-bound keys, encryption, key-delivery-via-pairing, single-use invite, owner-only invite/remove, content-key rotation on revoke, phone-join+persist+restart, suspend/resume (stall+local-first+storm+drain+link-survival), exception filter (allowlist+cause-chain+window+process-level), tiered eviction (cold-start+demand-fetch+evict+re-fetch+oracle), blind mirror (absorb+founder-offline-converge+original-from-mirror+ciphertext-only+lifecycle), key continuity (owner-reboot+late-joiner-grants+kicked-gains-nothing), private topic (derived≠public+stranger-finds-nobody+keyholder-connects) all verified')

@@ -9,6 +9,7 @@
 const Hyperbee = require('hyperbee')
 const c = require('compact-encoding')
 const b4a = require('b4a')
+const crypto = require('hypercore-crypto')
 const { resolveStruct } = require('./spec')
 
 // The photo record is the generated Hyperschema struct (compact-encoding) at the
@@ -167,6 +168,19 @@ async function apply (nodes, view, host) {
   }
 }
 
+// --- discovery (Ch10 M2) ---
+// The swarm topic members actually meet on. An ENCRYPTED album derives it from
+// the ALBUM key (domain-separated hash) — the library key is the shareable
+// identifier, and `discoveryKey(libraryKey)` is a public derivation, so joining
+// on it hands every library-key holder the members' IP addresses. Deriving from
+// the album key makes finding the members require the same secret as reading
+// them. Unencrypted libraries keep the classic core discoveryKey. (Blind
+// mirrors are unaffected either way — they're dialed directly by key.)
+const NS_TOPIC = b4a.from('shoebox:album-topic:v1')
+function discoveryTopic (base, encryptionKey) {
+  return encryptionKey ? crypto.hash(b4a.concat([NS_TOPIC, encryptionKey])) : base.discoveryKey
+}
+
 // --- roles ---
 function roleKey (writerKey) { return b4a.toString(writerKey, 'hex') }
 async function roleOf (roles, writerKey) { const n = await roles.get(roleKey(writerKey)); return n ? n.value : null }
@@ -234,4 +248,4 @@ function writeUint64BE (buf, value, offset) {
   buf[offset + 7] = low & 0xff
 }
 
-module.exports = { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleKey, roleOf, epochKey, readEpoch, currentEpoch, sealedKeysFor, memberBoxKeys, writeUint64BE }
+module.exports = { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleKey, roleOf, epochKey, readEpoch, currentEpoch, sealedKeysFor, memberBoxKeys, discoveryTopic, writeUint64BE }

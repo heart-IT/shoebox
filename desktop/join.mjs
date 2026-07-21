@@ -16,7 +16,7 @@ import os from 'os'
 import path from 'path'
 
 const require = createRequire(import.meta.url)
-const { CMD, commandEncoding, openView, apply } = require('../worker/library')
+const { CMD, commandEncoding, openView, apply, discoveryTopic } = require('../worker/library')
 const { memberBoxKeyFromSeed } = require('../worker/rotation')
 
 const invite = z32.decode(process.argv[2]) // z-base-32 of the variable-length invite
@@ -61,7 +61,7 @@ await base.ready()
 // during pairing (they would otherwise be missed).
 swarm.on('connection', (conn) => { conn.on('error', () => {}); base.replicate(conn) })
 for (const conn of swarm.connections) { conn.on('error', () => {}); base.replicate(conn) }
-swarm.join(base.discoveryKey, { server: true, client: true })
+swarm.join(discoveryTopic(base, albumKey), { server: true, client: true }) // members-only topic for an encrypted album (Ch10)
 
 // (d) Wait for write access — react to events, never poll. writable flips when
 // the library's ADD_WRITER (naming our key) replicates in and applies.

@@ -22,7 +22,7 @@ import path from 'path'
 // The library contract — the deterministic apply()/open()/wire the phone wrote
 // its commands with. Sharing this module is what makes the views identical.
 const require = createRequire(import.meta.url)
-const { commandEncoding, openView, apply } = require('../worker/library')
+const { commandEncoding, openView, apply, discoveryTopic } = require('../worker/library')
 
 const key = decode(process.argv[2]) // the LIBRARY key (base.key), not a core key
 // A 64-hex album key decrypts the view + blobs; anything else is treated as the
@@ -44,11 +44,14 @@ await base.ready()
 // base.replicate attaches the wakeup protocol (store.replicate alone would never
 // learn which writers advanced). Join as a client — we consume, we don't announce.
 swarm.on('connection', (conn) => { conn.on('error', () => {}); base.replicate(conn) })
-swarm.join(base.discoveryKey, { client: true, server: false })
+// Ch10: an encrypted album's members meet on a topic derived from the ALBUM
+// key. Without it we fall back to the classic discoveryKey — where, since Ch10,
+// nobody announces an encrypted library anymore.
+swarm.join(discoveryTopic(base, encryptionKey), { client: true, server: false })
 
 console.log(encryptionKey
   ? 'looking for your library on the swarm (with the album key)…'
-  : 'looking for your library on the swarm (no album key — an encrypted album will read EMPTY)…')
+  : 'looking for your library on the swarm (no album key — an encrypted album is not even FINDABLE on this topic since Ch10)…')
 
 // Sync the log and rebuild the view. base.update() fetches what's AVAILABLE, so
 // we loop — each pass gives replication a real event-loop turn to deliver blocks.
