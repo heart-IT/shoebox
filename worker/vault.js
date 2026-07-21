@@ -19,6 +19,7 @@ const z32 = require('z32') // invites are variable-length, not 32-byte keys
 const b4a = require('b4a')
 const { CMD, ROLE, commandEncoding, openView, apply, photoKey, disambiguator, roleOf, currentEpoch, sealedKeysFor, memberBoxKeys, readEpoch, discoveryTopic, writeUint64BE } = require('./library')
 const { newContentKey, sealTo, openSealed, contentEncrypt, contentDecrypt } = require('./rotation')
+const { codedError } = require('./errors')
 
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', heic: 'image/heic', webp: 'image/webp', gif: 'image/gif' }
 function mimeFor (name) {
@@ -223,11 +224,11 @@ class Vault {
   // On an ENCRYPTED album, revocation ALSO rotates the content key (Ch7 M3): future
   // photos are sealed under a key the removed member never receives.
   async removeMember (writerKeyHex) {
-    if (!/^[0-9a-fA-F]{64}$/.test(writerKeyHex)) throw new Error('removeMember: writerKey must be 32-byte hex')
+    if (!/^[0-9a-fA-F]{64}$/.test(writerKeyHex)) throw codedError('EBADKEY', 'removeMember: writerKey must be 32-byte hex')
     // Serialized (AF-M4): the whole kick+rotate is atomic w.r.t. other kicks, so
     // each rotation reads the post-removal roster and a fresh, distinct epoch.
     return this._withMembershipLock(async () => {
-      if (!(await this.isOwner())) throw new Error('only the album owner can remove a member')
+      if (!(await this.isOwner())) throw codedError('ENOTOWNER', 'only the album owner can remove a member')
       await this.base.append({ type: CMD.REMOVE_WRITER, writerKey: b4a.from(writerKeyHex, 'hex') })
       await this.base.update()
       if (this.encryptionKey) await this.rotateContentKey()
@@ -391,7 +392,7 @@ class Vault {
   // standing writer+key credential. We admit exactly the first candidate and deny
   // the rest; a fresh invite closes the previous member so invites can rotate.
   async createInvite () {
-    if (!(await this.isOwner())) throw new Error('only the album owner can invite a device')
+    if (!(await this.isOwner())) throw codedError('ENOTOWNER', 'only the album owner can invite a device')
     if (!this.swarm) await this.share()
     if (!this.pairing) this.pairing = new BlindPairing(this.swarm)
     if (this.member) { await this.member.close().catch(() => {}); this.member = null }
@@ -450,7 +451,7 @@ class Vault {
     // Reject empty blobs: hyperblobs does not advance byteOffset for a 0-byte
     // put, so the per-blob disambiguator would degenerate and two empty imports
     // with the same time+name could collide onto one key.
-    if (!buffer || buffer.byteLength === 0) throw new Error('refusing to import an empty (0-byte) photo')
+    if (!buffer || buffer.byteLength === 0) throw codedError('EEMPTY', 'refusing to import an empty (0-byte) photo')
     const name = meta.name || 'photo'
     const takenAt = meta.takenAt || Date.now()
     // The current content epoch decides which key encrypts this photo's browsable
@@ -467,7 +468,7 @@ class Vault {
     // ROTATE_KEY (epoch advanced) but not yet its GRANT_KEYS sealed copy. Fail
     // loudly and let the caller retry once the key replicates in.
     if (this.encryptionKey && contentKey === undefined) {
-      throw new Error('album epoch key not available yet — wait for sync to catch up, then retry the import')
+      throw codedError('EEPOCHKEY', 'album epoch key not available yet — wait for sync to catch up, then retry the import')
     }
     // Phase 1: bytes into THIS device's blobs core for this epoch (encrypted at the
     // hypercore layer with the epoch's content key), never into the command log.
@@ -887,7 +888,7 @@ async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKey
     // the finally cleans up and we throw, so the caller's bootVault() recovers.
     await Promise.race([
       candidate.pairing,
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('pairing timed out — the invite may be spent or the inviting device offline')), timeoutMs) }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(codedError('EPAIRTIMEOUT', 'pairing timed out — the invite may be spent or the inviting device offline')), timeoutMs) }),
     ])
   } finally {
     if (timer) clearTimeout(timer)
@@ -897,7 +898,7 @@ async function pairAsCandidate (storagePath, { primaryKey = null, invite, boxKey
     await swarm.destroy().catch(() => {})
     await store.close().catch(() => {})
   }
-  if (!libraryKey) throw new Error('pairing rejected by the library (bad or spent invite)')
+  if (!libraryKey) throw codedError('EPAIRDENIED', 'pairing rejected by the library (bad or spent invite)')
   return { libraryKey: b4a.from(libraryKey), encryptionKey: encryptionKey ? b4a.from(encryptionKey) : null }
 }
 

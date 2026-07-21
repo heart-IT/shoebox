@@ -54,6 +54,8 @@ export default function App() {
   // it — it's the root secret, so it is never logged or persisted app-side.
   const [mnemonic, setMnemonic] = useState<string | null>(null)
   const [restoreWords, setRestoreWords] = useState('')
+  // Bumped on every foreground; the grid re-lists so blob links are fresh (AF-L).
+  const [resumeEpoch, setResumeEpoch] = useState(0)
   const clientRef = useRef<VaultClient | null>(null)
   // Reentrancy guard: import buttons don't disable themselves, so a double-tap
   // (or tapping a second import mid-run) would interleave two batches into the
@@ -113,6 +115,13 @@ export default function App() {
         client.resume().catch(() => {})
         // Wake any batch loop parked at a photo boundary.
         for (const wake of foregroundWaitersRef.current.splice(0)) wake()
+        // AF-L (refreshLink): the blob-server re-binds its ORIGINAL port on
+        // resume, but falls back to a fresh one if that bind now fails — which
+        // silently breaks every blob link the UI is already holding. Bumping
+        // this makes the grid re-list (and so re-mint links) after each resume,
+        // which covers the fallback without the worker having to track the
+        // app's links.
+        setResumeEpoch(e => e + 1)
       }
     })
 
@@ -454,7 +463,7 @@ export default function App() {
     return (
       <SafeAreaView style={styles.root}>
         <Button title="← back" onPress={() => setShowGrid(false)} />
-        <Grid client={clientRef.current} />
+        <Grid client={clientRef.current} refreshKey={resumeEpoch} />
       </SafeAreaView>
     )
   }

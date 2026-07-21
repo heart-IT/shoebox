@@ -158,6 +158,33 @@ const idSeed = b4a.from('22'.repeat(32), 'hex')
 assert.ok(b4a.equals(primaryKeyFromSeed(idSeed), primaryKeyFromSeed(idSeed)), 'primaryKeyFromSeed is deterministic')
 assert.equal(primaryKeyFromSeed(idSeed).byteLength, 32, 'primary key is 32 bytes')
 
+// Audit AF-M13: TYPED ERRORS + BOUNDED DIAGNOSTICS. A no-server app has no
+// server logs, so a failure the user reports has to leave evidence on the
+// device — bounded, and flushed on SUSPEND rather than only on crash (the OS
+// can freeze a backgrounded app without warning).
+const { createDiagnostics } = require('../diagnostics')
+const { codedError, codeOf } = require('../errors')
+assert.equal(codeOf(codedError('ENOTOWNER', 'x')), 'ENOTOWNER', 'a coded error reports its code')
+assert.equal(codeOf(new Error('plain')), 'EINTERNAL', 'an uncoded throw reports EINTERNAL, never a bogus code')
+assert.equal(codeOf(Object.assign(new Error('x'), { code: 'NOPE' })), 'EINTERNAL', 'an unknown code is not passed through as if it were contractual')
+const dgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoebox-diag-'))
+const dgPath = path.join(dgDir, 'diagnostics.log')
+const dg = createDiagnostics(fs, dgPath, { maxEntries: 5, maxBytes: 4096 })
+for (let i = 0; i < 12; i++) dg.log('info', `event ${i}`, 1_700_000_000_000 + i)
+assert.equal(dg.size, 5, 'the ring is BOUNDED — a crash loop cannot grow it without limit')
+assert.equal(dg.dropped, 7, 'and it counts what it dropped')
+assert.ok(dg.lines()[4].includes('event 11'), 'the newest event is retained')
+assert.ok(!dg.lines().join('\n').includes('event 0'), 'the oldest events are evicted')
+assert.ok(dg.flush(), 'flush writes the ring to disk')
+const dgText = fs.readFileSync(dgPath, 'utf-8')
+assert.ok(dgText.includes('event 11') && dgText.includes('7 earlier entries dropped'), 'the file carries the recent events and an honest drop count')
+assert.ok(dgText.length <= 4096, 'and respects the byte cap')
+// Diagnostics must never be the reason a suspend/teardown fails.
+const dgBad = createDiagnostics({ writeFileSync () { throw new Error('disk full') }, renameSync () {} }, dgPath)
+dgBad.log('error', 'x')
+assert.equal(dgBad.flush(), false, 'a failing flush returns false instead of throwing')
+fs.rmSync(dgDir, { recursive: true, force: true })
+
 // Audit AF-H5: THE 24 WORDS. A device's whole identity is one 32-byte seed, and
 // until now it existed in exactly one place — so a lost phone was a lost library
 // with no recovery path (CONSTRAINT-KEY-BACKUP). Our BIP39 codec is implemented

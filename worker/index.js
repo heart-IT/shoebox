@@ -11,6 +11,8 @@ const b4a = require('b4a')
 const idEncoding = require('hypercore-id-encoding')
 const { Vault, pairAsCandidate } = require('./vault')
 const { createSuspensionWindow, installSuspensionFilter } = require('./lifecycle')
+const { codedError, codeOf } = require('./errors')
+const { createDiagnostics } = require('./diagnostics')
 const thumbnail = require('./thumbnail')
 
 // The OS closes our sockets while we're backgrounded; on resume, Bare cleans up
@@ -18,7 +20,7 @@ const thumbnail = require('./thumbnail')
 // class (narrow allowlist, cause-chain aware), exactly in the suspend→resume
 // window; everything else re-throws and crashes loudly, as before (Ch8 M2).
 const suspension = createSuspensionWindow()
-installSuspensionFilter(Bare, suspension, { log: console.error })
+installSuspensionFilter(Bare, suspension, { log: (m) => { console.error(m); diag.log('warn', m) } })
 
 // Eager ≤256px preview per import, generated in the worker (never the renderer).
 // Unsupported/corrupt images import without a thumb rather than failing — but we
@@ -38,6 +40,9 @@ async function withThumb (bytes, meta) {
 const CMD = { STAT: 1, IMPORT: 2, SUSPEND: 3, RESUME: 4, IMPORT_RAW: 5, LIST: 6, CREATE_INVITE: 7, LIST_MEMBERS: 8, REMOVE_MEMBER: 10, ERROR: 9, JOIN: 11, EVICT: 12, STORAGE_STAT: 13, SET_MIRROR: 14, EXPORT_MNEMONIC: 15, RESTORE_MNEMONIC: 16 }
 
 let vault = null
+// AF-M13: the rolling diagnostics ring. Replaced in main() with a disk-backed
+// one once the storage path is known; until then events are simply dropped.
+let diag = { log () {}, flush () { return false } }
 // Audit AF-M9: RPC input bounds. The app is the only client, but it's still the
 // trust boundary — a buggy release must not OOM or wedge the worker.
 const MAX_PAYLOAD_BYTES = 32 * 1024 * 1024 // caps a pathological frame; a real photo (base64) stays well under
@@ -55,14 +60,14 @@ const ready = new Promise((resolve) => { vaultReady = resolve })
 
 const rpc = new RPC(BareKit.IPC, async (req) => {
   await ready
-  if (bootError) return req.reply(json({ error: 'worker failed to start: ' + bootError }))
+  if (bootError) return req.reply(json({ error: 'worker failed to start: ' + bootError, code: 'EBOOT' }))
   // AF-M9: reject oversized frames and back-pressure a request flood before any
   // work (or memory) is spent on them.
   if (req.data && req.data.byteLength > MAX_PAYLOAD_BYTES) {
-    return req.reply(json({ error: 'payload too large' }))
+    return req.reply(json({ error: 'payload too large', code: 'EPAYLOAD' }))
   }
   if (inflight >= MAX_INFLIGHT) {
-    return req.reply(json({ error: 'worker busy — too many in-flight requests' }))
+    return req.reply(json({ error: 'worker busy — too many in-flight requests', code: 'EBUSY' }))
   }
   // Audit AF-H2: during a JOIN reboot the vault is briefly null. Every command
   // but JOIN needs it — reply with a clean, retryable error instead of throwing
@@ -70,7 +75,7 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
   // `suspension.onSuspend()` and then fail (which used to leave the exception
   // filter's window stuck open in the foreground).
   if (vault === null && req.command !== CMD.JOIN) {
-    return req.reply(json({ error: 'worker is busy joining a library — retry shortly' }))
+    return req.reply(json({ error: 'worker is busy joining a library — retry shortly', code: 'EBUSY_JOINING' }))
   }
   inflight++
   try {
@@ -147,6 +152,8 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         suspension.onSuspend()
         try {
           await vault.suspend()
+          diag.log('info', 'suspended')
+          diag.flush() // evidence must survive an OS freeze/kill (AF-M13)
           req.reply(json({ ok: true }))
         } catch (err) {
           suspension.onResume() // don't strand the window open on a failed suspend
@@ -158,6 +165,7 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         // end the filter's window (settleMs from now), not leave it open.
         try {
           await vault.resume()
+          diag.log('info', `resumed (peers ${vault.status().peers})`)
           req.reply(json({ ok: true }))
         } catch (err) {
           req.reply(json({ error: String((err && err.stack) || err) }))
@@ -192,8 +200,8 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         // someone else's library. Restore belongs on a fresh install.
         const { mnemonic } = JSON.parse(b4a.toString(req.data))
         const restored = ctx.seedFromMnemonic(mnemonic) // throws on bad words/checksum
-        if (ctx.loadMembership(ctx.fs, ctx.membershipPath)) throw new Error('this device has joined a library — restore only on a fresh install')
-        if ((await vault.count()) > 0) throw new Error('this device already holds photos — restore only on a fresh install')
+        if (ctx.loadMembership(ctx.fs, ctx.membershipPath)) throw codedError('ENOTFRESH', 'this device has joined a library — restore only on a fresh install')
+        if ((await vault.count()) > 0) throw codedError('ENOTFRESH', 'this device already holds photos — restore only on a fresh install')
         await vault.close()
         vault = null
         try {
@@ -230,9 +238,9 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         // {libraryKey, albumKey}, persist them, and reboot as a member. The keys
         // are the founder's secret — not seed-derivable — so persistence is what
         // lets us reopen the album on later boots without re-pairing.
-        if (ctx.loadMembership(ctx.fs, ctx.membershipPath)) throw new Error('this device has already joined a library')
+        if (ctx.loadMembership(ctx.fs, ctx.membershipPath)) throw codedError('EJOINED', 'this device has already joined a library')
         const { invite } = JSON.parse(b4a.toString(req.data))
-        if (!invite) throw new Error('join requires an invite code')
+        if (!invite) throw codedError('EBADKEY', 'join requires an invite code')
         if (vault) { await vault.close(); vault = null } // release the store before pairing reopens it
         let delivered
         try {
@@ -248,10 +256,13 @@ const rpc = new RPC(BareKit.IPC, async (req) => {
         break
       }
       default:
-        req.reply(json({ error: `unknown command: ${req.command}` }))
+        req.reply(json({ error: `unknown command: ${req.command}`, code: 'ECOMMAND' }))
     }
   } catch (err) {
-    req.reply(json({ error: String((err && err.stack) || err) }))
+    // AF-M13: a stable code alongside the human message, so the app can branch.
+    const code = codeOf(err)
+    diag.log(code === 'EINTERNAL' ? 'error' : 'warn', `cmd ${req.command} failed [${code}] ${String((err && err.message) || err)}`)
+    req.reply(json({ error: String((err && err.stack) || err), code }))
   } finally {
     inflight-- // AF-M9: release the in-flight slot on every path
   }
@@ -261,7 +272,9 @@ main().then(vaultReady, (err) => {
   // Boot failed: record it and RESOLVE ready anyway, so every pending/future
   // command replies with an error instead of hanging on `await ready` forever.
   bootError = String((err && err.stack) || err)
-  rpc.event(CMD.ERROR).send(json({ message: bootError }))
+  diag.log('error', 'boot failed: ' + bootError)
+  diag.flush()
+  rpc.event(CMD.ERROR).send(json({ message: bootError, code: 'EBOOT' }))
   vaultReady()
 })
 
@@ -294,6 +307,10 @@ async function main () {
   // encryption key. AF-H5: it is now exportable as a 24-word mnemonic (and
   // restorable from one); moving it into the platform keychain remains native
   // work, so here it still lives beside the vault.
+  // AF-M13: a bounded on-disk diagnostics ring. Flushed on SUSPEND (the OS can
+  // freeze us without warning) and on teardown, so a field failure leaves evidence.
+  diag = createDiagnostics(fs, path.join(base, 'shoebox-diagnostics.log'))
+  diag.log('info', 'worker booting')
   const seedPath = path.join(base, 'shoebox-seed')
   const seed = loadOrCreateSeed(fs, seedPath)
   // Everything a boot (or a later JOIN reboot) needs, computed once. The founder's
@@ -367,6 +384,8 @@ async function bootVault () {
 // Corestore shut down cleanly (otherwise every teardown leaks sockets and leaves
 // the store closed uncleanly — a stuck-lock risk on the next boot).
 Bare.on('teardown', async () => {
+  diag.log('info', 'teardown')
+  diag.flush()
   try { if (vault) await vault.close() } catch { /* best effort on the way out */ }
 })
 

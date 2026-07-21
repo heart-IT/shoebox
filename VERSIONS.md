@@ -877,3 +877,41 @@ RPCs and a Back-up / Restore UI expose it.
   commit whose worker source has drifted from the committed bundle. Verified
   both ways — passes on a fresh bundle, blocks after a one-line worker edit.
   `--no-verify` bypasses deliberately.
+
+### AF-M13 (remainder) — typed errors + on-disk diagnostics
+
+- **Typed errors.** `worker/errors.js` defines a code table (EBOOT,
+  EBUSY_JOINING, ENOTOWNER, EEPOCHKEY, EPAIRTIMEOUT, ECORRUPT, EMNEMONIC, …);
+  every throw the app is expected to handle now carries one, the RPC reply
+  includes `code`, and the client rethrows `Error` with `.code` attached so
+  callers branch on the failure instead of pattern-matching a stack trace. An
+  uncoded throw — or an unrecognised code — reports `EINTERNAL` rather than
+  being passed through as if contractual. Codes are a wire contract like the
+  command ids: append, never repurpose.
+- **Bounded diagnostics.** `worker/diagnostics.js` keeps a capped in-memory ring
+  (200 entries) written to a byte-capped file. Flushed on SUSPEND — not only on
+  crash, since the OS can freeze a backgrounded app without warning (Inv-10) —
+  and on teardown and boot failure. Records operational events only: no seeds,
+  keys, mnemonics, or photo content. A failing flush returns false rather than
+  throwing, so diagnostics can never be the reason a suspend fails. Smoke:
+  bounded ring, drop accounting, byte cap, non-throwing flush.
+
+### AF-L (refreshLink) — links refresh after every resume
+
+The blob-server re-binds its original port on resume but falls back to a fresh
+one if that bind fails, silently breaking every link the UI already holds. The
+app now bumps a `resumeEpoch` on each foreground and the grid re-lists on it, so
+links are re-minted after every resume — covering the fallback without the
+worker having to track the app's links.
+
+### AF-H6 (remainder) — relay host NOT written, and why
+
+`blind-relay` is a low-level Protomux/UDX primitive, not a daemon: a relay host
+means wiring `relay.Server` with a `createStream` UDX allocator and accepting
+Protomux sessions from DHT peers (hyperdht uses `blind-relay` only as a CLIENT,
+via `relay.Client.from(...)`). The blocker is verification, not effort — proving
+a relay actually relays needs two peers that genuinely cannot holepunch, which
+cannot be simulated here. An unverified relay host would make `relayThrough`
+look satisfied while symmetric-NAT peers still fail silently, so it is
+deliberately left to a deployment that can test it. The CLIENT side is wired and
+ready (Batch 8).

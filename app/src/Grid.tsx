@@ -28,7 +28,7 @@ const DEGENERATE = '0000000000000000'
  * (embedding cosine), both computed offline over the index columns — never over
  * pixels, nothing leaving the phone.
  */
-export function Grid({ client }: { client: VaultClient }) {
+export function Grid({ client, refreshKey = 0 }: { client: VaultClient; refreshKey?: number }) {
   const [photos, setPhotos] = useState<PhotoRecord[]>([])
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<PhotoRecord | null>(null)
@@ -49,7 +49,9 @@ export function Grid({ client }: { client: VaultClient }) {
       (p) => { setPhotos(p); setError(null) },
       (e) => setError(String(e)),
     )
-  }, [client])
+    // refreshKey changes on every app resume, so links (which encode the
+    // blob-server port) are re-minted rather than going stale (AF-L).
+  }, [client, refreshKey])
 
   // Near-duplicates over the dHash column — memoized so it isn't recomputed on
   // every render (only when the open photo or the library changes).

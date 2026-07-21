@@ -85,7 +85,10 @@ export class VaultClient {
     req.send(b4a.from(payload ? JSON.stringify(payload) : ''))
     const res: Uint8Array = await this.withTimeout(req.reply(), `command ${command}`, timeoutMs)
     const out = JSON.parse(b4a.toString(res))
-    if (out.error) throw new Error(out.error)
+    // AF-M13: worker errors carry a stable `code` (ENOTOWNER, EBUSY_JOINING,
+    // EEPOCHKEY, …) alongside the human message, so callers can branch on the
+    // failure instead of pattern-matching a stack trace.
+    if (out.error) throw Object.assign(new Error(out.error), { code: out.code || 'EINTERNAL' })
     return out
   }
 

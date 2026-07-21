@@ -1,14 +1,15 @@
 // A device's identity is a 32-byte SEED. From it we derive the Corestore primary
 // key, and from THAT every core the device owns — including its Autobase writer
 // key. So one backed-up seed restores the whole device's identity: same seed →
-// same primary key → same writer key. Here the seed is generated once and
-// persisted beside the vault; the mnemonic that would back it up (24 words a
-// human can write down) and the platform keychain that would guard it are a
-// later chapter. Deriving the primary key from a seed NOW — even a random one —
-// is the "day one" move that keeps that later chapter a non-breaking upgrade.
+// same primary key → same writer key. The seed is generated once and persisted
+// beside the vault, and is backed up as 24 words by ./mnemonic (AF-H5). Moving
+// it into the platform keychain remains native work. Deriving the primary key
+// from a seed — even a random one — is what makes both of those non-breaking.
 
 const crypto = require('hypercore-crypto')
 const b4a = require('b4a')
+
+const { codedError } = require('./errors')
 
 const NS = b4a.from('shoebox:corestore:v1') // domain-separate this derivation
 
@@ -61,7 +62,7 @@ function writeFileAtomic (fs, filePath, data) {
 function loadOrCreateSeed (fs, seedPath) {
   const buf = readIfExists(fs, seedPath)
   if (buf) {
-    if (buf.byteLength !== 32) throw new Error(`seed file is corrupt (${buf.byteLength} bytes, expected 32) — refusing to overwrite the device identity. Restore from backup, or delete ${seedPath} to start fresh.`)
+    if (buf.byteLength !== 32) throw codedError('ECORRUPT', `seed file is corrupt (${buf.byteLength} bytes, expected 32) — refusing to overwrite the device identity. Restore from backup, or delete ${seedPath} to start fresh.`)
     return buf
   }
   const seed = crypto.randomBytes(32)
@@ -89,7 +90,7 @@ function loadMembership (fs, membershipPath) {
   // Present-but-wrong-length is CORRUPT and fatal (AF-M12): the delivered keys
   // are the founder's secret and NOT re-derivable, so silently booting as a
   // fresh founder over the joiner's store would strand the joined library.
-  if (buf.byteLength !== 64) throw new Error(`membership file is corrupt (${buf.byteLength} bytes, expected 64) — the delivered album keys are unrecoverable. Restore from backup, or delete ${membershipPath} to re-pair this device.`)
+  if (buf.byteLength !== 64) throw codedError('ECORRUPT', `membership file is corrupt (${buf.byteLength} bytes, expected 64) — the delivered album keys are unrecoverable. Restore from backup, or delete ${membershipPath} to re-pair this device.`)
   return { libraryKey: buf.subarray(0, 32), albumKey: buf.subarray(32, 64) }
 }
 
@@ -97,7 +98,7 @@ function loadMembership (fs, membershipPath) {
 // like every other artifact. Callers must have established there's nothing to
 // lose — the local store's cores derive from the OLD seed.
 function saveSeed (fs, seedPath, seed) {
-  if (!seed || seed.byteLength !== 32) throw new Error('saveSeed: expected a 32-byte seed')
+  if (!seed || seed.byteLength !== 32) throw codedError('EBADKEY', 'saveSeed: expected a 32-byte seed')
   writeFileAtomic(fs, seedPath, seed)
 }
 

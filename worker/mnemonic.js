@@ -21,6 +21,7 @@
 const sodium = require('sodium-universal')
 const b4a = require('b4a')
 const WORDLIST = require('./wordlist.json')
+const { codedError } = require('./errors')
 
 const INDEX = new Map(WORDLIST.map((w, i) => [w, i]))
 const ENTROPY_BYTES = 32 // 256 bits → 8 checksum bits → 24 words
@@ -33,7 +34,7 @@ function sha256 (buf) {
 
 // 32-byte seed → 24 space-separated words.
 function mnemonicFromSeed (seed) {
-  if (!seed || seed.byteLength !== ENTROPY_BYTES) throw new Error(`mnemonic: expected a ${ENTROPY_BYTES}-byte seed`)
+  if (!seed || seed.byteLength !== ENTROPY_BYTES) throw codedError('EMNEMONIC', `mnemonic: expected a ${ENTROPY_BYTES}-byte seed`)
   let bits = ''
   for (const byte of seed) bits += byte.toString(2).padStart(8, '0')
   bits += sha256(seed)[0].toString(2).padStart(8, '0') // checksum: first 8 bits of SHA-256
@@ -48,17 +49,17 @@ function mnemonicFromSeed (seed) {
 // library. The checksum is what makes that impossible.
 function seedFromMnemonic (mnemonic) {
   const words = String(mnemonic || '').trim().toLowerCase().split(/\s+/).filter(Boolean)
-  if (words.length !== 24) throw new Error(`mnemonic: expected 24 words, got ${words.length}`)
+  if (words.length !== 24) throw codedError('EMNEMONIC', `mnemonic: expected 24 words, got ${words.length}`)
   let bits = ''
   for (const w of words) {
     const idx = INDEX.get(w)
-    if (idx === undefined) throw new Error(`mnemonic: "${w}" is not a BIP39 word`)
+    if (idx === undefined) throw codedError('EMNEMONIC', `mnemonic: "${w}" is not a BIP39 word`)
     bits += idx.toString(2).padStart(11, '0')
   }
   const seed = b4a.alloc(ENTROPY_BYTES)
   for (let i = 0; i < ENTROPY_BYTES; i++) seed[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2)
   const expected = sha256(seed)[0].toString(2).padStart(8, '0')
-  if (bits.slice(ENTROPY_BYTES * 8) !== expected) throw new Error('mnemonic: checksum failed — check the words and their order')
+  if (bits.slice(ENTROPY_BYTES * 8) !== expected) throw codedError('EMNEMONIC', 'mnemonic: checksum failed — check the words and their order')
   return seed
 }
 
