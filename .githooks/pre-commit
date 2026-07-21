@@ -1,0 +1,19 @@
+#!/bin/sh
+# Audit AF-H9: stop a stale worker bundle from being committed.
+#
+# The bundle (app/worker.bundle.mjs) is committed, so a worker/ edit without a
+# rebuild silently ships an old kernel — the "my change does nothing" class.
+# This hashes worker source against the hash recorded at bundle time. It needs
+# no install and no network (Node builtins only), so it stays fast enough to
+# run on every commit.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Bypass deliberately:    git commit --no-verify
+
+if ! node app/check-bundle.mjs; then
+  echo ''
+  echo 'pre-commit: the worker bundle is stale.'
+  echo '  cd app && npm run bundle:worker'
+  echo 'then stage app/worker.bundle.mjs and app/worker.bundle.hash.'
+  exit 1
+fi

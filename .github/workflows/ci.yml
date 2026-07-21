@@ -1,0 +1,49 @@
+# Audit AF-H9: the gates exist as scripts; this is what actually runs them.
+# The worker bundle is committed, so "did someone forget `npm run bundle:worker`"
+# is a real failure mode — the bundle job catches it and needs no install at all
+# (check-bundle.mjs uses only Node builtins).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  worker-smoke:
+    name: worker smoke (hermetic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+        working-directory: worker
+      # The full suite: encryption, rotation, pairing, lifecycle, eviction,
+      # blind mirror, key continuity, mnemonic. Hermetic (hyperdht/testnet).
+      - run: npm test
+        working-directory: worker
+
+  bundle-freshness:
+    name: worker bundle is not stale
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node check-bundle.mjs
+        working-directory: app
+
+  types:
+    name: app typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+        working-directory: app
+      - run: npx tsc --noEmit
+        working-directory: app

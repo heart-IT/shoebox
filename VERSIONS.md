@@ -867,3 +867,13 @@ RPCs and a Back-up / Restore UI expose it.
 - The bundle-freshness gate was extended to hash `.json` too — the wordlist is a
   bundled runtime asset, and hashing only `.js` would have missed it (verified:
   editing the wordlist now reports STALE).
+
+### AF-H9 (remainder) — the gates now actually run
+
+- `.github/workflows/ci.yml`: three jobs — the full hermetic worker smoke, the
+  bundle-freshness check (no install needed; `check-bundle.mjs` is Node builtins
+  only), and the app typecheck.
+- `.githooks/pre-commit` + `git config core.hooksPath .githooks`: blocks a
+  commit whose worker source has drifted from the committed bundle. Verified
+  both ways — passes on a fresh bundle, blocks after a one-line worker edit.
+  `--no-verify` bypasses deliberately.
