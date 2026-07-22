@@ -915,3 +915,40 @@ cannot be simulated here. An unverified relay host would make `relayThrough`
 look satisfied while symmetric-NAT peers still fail silently, so it is
 deliberately left to a deployment that can test it. The CLIENT side is wired and
 ready (Batch 8).
+
+## Verification scope — worker smoke vs. on-device (2026-07-22)
+
+Re-verification pass over `main` + all ten chapter tags: each tag was checked out
+and its `worker/test/smoke.mjs` run under Node. All eleven pass, with assertion
+counts growing monotonically per chapter — ch01: 2 groups, ch03: 4, ch05: 11,
+ch07: 20, ch09: 25, ch10: 28, `main`: the full set — confirming every
+`git checkout ch0X && npm test` a reader runs works, with no dependency drift
+against `main`'s installed `node_modules`. The worker smoke is also the CI gate
+(`.github/workflows/ci.yml`, `working-directory: worker`).
+
+**What that pass does NOT cover — the standing Android/emulator verification gap.**
+The smoke suite exercises the **host-agnostic worker only** (storage, index,
+pairing, crypto, revocation, lifecycle, eviction, blind mirror); it runs under
+Node precisely because the vault is host-agnostic by design. It does not exercise
+the **app / native / on-device half**:
+
+- `npm run android` / `npm run ios` — the RN app build and boot.
+- The Nitro modules across the JSI seam — `ShoeboxRoll`, `ShoeboxBytes`,
+  `ShoeboxEmbed`, `ShoeboxPaths` — and the native registration they depend on.
+- The RN UI, the `hypercore-blob-server` localhost render path into `<Image>`,
+  and on-device ML (Core ML / NNAPI; iOS embed is a documented stub).
+- Real DHT replication and pairing between two *physical* devices (the swarm/
+  holepunch path the smoke stubs with in-process transport).
+
+This environment has no Android emulator or device, so none of the above is run
+each audit. On-device numbers were captured historically (the "measured on
+device" entries above, Ch02–Ch04) but are not part of the reproducible gate.
+Items already flagged device-gated remain open on the same grounds — **C2**
+(16KB-page-size release-APK check), **R1** (bare-kit auto-suspend socket close),
+**H5** (async-asset worker bundle); see "Still open (device- or feature-gated)".
+
+Consequence: the worker logic behind `main` and every chapter tag is
+self-verifying and CI-covered; the native/UI integration is validated by
+construction and prose, not by an automated on-device test in this repo. A
+device/emulator run is the missing verification tier — the blocker is hardware
+this environment lacks, not unwritten tests.
