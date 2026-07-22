@@ -2,7 +2,7 @@
 
 A peer-to-peer photo library on React Native. No server ever sees a photo, a
 thumbnail, or the search index. Companion repo to the
-[Shoebox blog series](https://github.com/heart-IT) — one runnable tag per chapter.
+[Shoebox blog series](https://heartit.tech/category/local-first/) — one runnable tag per chapter.
 
 ## Layout
 
