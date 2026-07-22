@@ -1,6 +1,6 @@
 # Shoebox — repo state
 
-_Snapshot: 2026-07-22. A P2P photo library on React Native (Holepunch stack). Companion to the blog series at heart-IT/heartit-blogs (`local-first/`)._
+_Snapshot: 2026-07-22. A P2P photo library on React Native (Holepunch stack). Companion to the [Shoebox blog series](https://heartit.tech/category/local-first/) (source: heart-IT/heartit-blogs, `local-first/`)._
 
 ## Branches & tags
 
