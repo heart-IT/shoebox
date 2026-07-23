@@ -328,7 +328,7 @@ class Vault {
       this.blind = new BlindPeering(this.swarm.dht, this.store, {
         wakeup: this.wakeup,
         keys: this.blindPeerKeys,
-        pick: 1,
+        pick: 1, // blind-peering ≤2.4 option — renamed `mirrors` in 2.5.0 (silently ignored there); migrate on bump
         suspended: this.suspended, // a client minted mid-background starts suspended
         ...(this.relayThrough ? { relayThrough: this.relayThrough } : {}),
       })
@@ -365,7 +365,7 @@ class Vault {
     if (!this.blind) {
       this.wakeup = this.wakeup || new Wakeup(() => { this.base.update().catch(() => {}) })
       for (const conn of this.swarm.connections) this.wakeup.addStream(conn) // catch up existing peers
-      this.blind = new BlindPeering(this.swarm.dht, this.store, { wakeup: this.wakeup, keys, pick: 1, suspended: this.suspended, ...(this.relayThrough ? { relayThrough: this.relayThrough } : {}) })
+      this.blind = new BlindPeering(this.swarm.dht, this.store, { wakeup: this.wakeup, keys, pick: 1 /* renamed `mirrors` in blind-peering 2.5.0 — migrate on bump */, suspended: this.suspended, ...(this.relayThrough ? { relayThrough: this.relayThrough } : {}) })
     } else {
       this.blind.setKeys(keys)
     }
